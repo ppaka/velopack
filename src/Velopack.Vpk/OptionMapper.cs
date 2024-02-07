@@ -26,6 +26,7 @@ public static partial class OptionMapper
     public static partial S3UploadOptions ToOptions(this S3UploadCommand cmd);
     public static partial DeltaGenOptions ToOptions(this DeltaGenCommand cmd);
     public static partial DeltaPatchOptions ToOptions(this DeltaPatchCommand cmd);
+    public static partial LoginOptions ToOptions(this LoginCommand cmd);
 
     private static DirectoryInfo StringToDirectoryInfo(string t)
     {

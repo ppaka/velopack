@@ -96,6 +96,8 @@ public class Program
         deltaCommand.AddCommand<DeltaPatchCommand, DeltaPatchCommandRunner, DeltaPatchOptions>(provider);
         rootCommand.Add(deltaCommand);
 
+        rootCommand.AddCommand<LoginCommand, LoginCommandRunner, LoginOptions>(provider);
+        
         var cli = new CliConfiguration(rootCommand);
         return await cli.InvokeAsync(args);
     }
