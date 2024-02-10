@@ -9,16 +9,23 @@ namespace Velopack.Packaging.Commands;
 public class LoginCommandRunner : ICommand<LoginOptions>
 {
     private static HttpClient Client { get; } = new HttpClient();
+    private IFancyConsole Console { get; }
+
+    public LoginCommandRunner(IFancyConsole console)
+    {
+        Console = console;
+    }
 
     public async Task Run(LoginOptions options)
     {
+        Console.WriteLine("Preparing to login to Vellopack");
+        
         AuthConfiguration authConfiguration = await GetAuthConfiguration(Client, options);
 
         var response = await StartDeviceFlowAsync(Client, authConfiguration);
         if (response is null)
             throw new Exception("Failed to start device flow.");
 
-        //TODO: This need spectre love.
         Console.WriteLine($"To sign in, use a web browser to open the page {response.VerificationUri} and enter the code {response.UserCode}.");
 
         var token = await PollForTokenAsync(Client, authConfiguration, response);
