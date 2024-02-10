@@ -29,7 +29,13 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console) : 
             await AcquireInteractiveAsync(pca, authConfiguration) ?? 
             await AcquireByDeviceCodeAsync(pca);
 
-        return rv != null;
+        if (rv != null) {
+            Console.WriteLine("Logged in to Vellopack");
+            return true;
+        } else {
+            Console.WriteLine("Failed to login to Vellopack");
+            return false;
+        }
     }
 
     private static async Task<AuthenticationResult?> AcquireSilentlyAsync(IPublicClientApplication pca)
@@ -94,7 +100,7 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console) : 
         while ((await pca.GetAccountsAsync()).FirstOrDefault() is { } account) {
             await pca.RemoveAsync(account);
         }
-        Console.WriteLine("Cleared saved login to Vellopack");
+        Console.WriteLine("Cleared saved login(s) for Vellopack");
     }
 
     private static async Task<IPublicClientApplication> BuildPublicApplicationAsync(AuthConfiguration authConfiguration)
