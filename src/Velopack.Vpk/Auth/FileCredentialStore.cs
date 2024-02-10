@@ -31,8 +31,15 @@ internal class FileCredentialStore : ICredentialStore
 
     protected static DirectoryInfo GetStorageDirectory()
     {
-        string userPath = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+        string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string vpkPath = Path.Combine(userPath, ".vpk");
         return new DirectoryInfo(vpkPath);
+    }
+
+    public virtual Task ClearAsync<T>()
+    {
+        FileInfo storageFile = GetStorageFile<T>();
+        storageFile.Delete();
+        return Task.CompletedTask;
     }
 }

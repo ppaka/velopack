@@ -10,6 +10,7 @@ using Velopack.Packaging.Commands;
 using Velopack.Packaging.Exceptions;
 using Velopack.Packaging.Unix.Commands;
 using Velopack.Packaging.Windows.Commands;
+using Velopack.Vpk.Auth;
 using Velopack.Vpk.Commands;
 using Velopack.Vpk.Converters;
 using Velopack.Vpk.Logging;
@@ -64,6 +65,7 @@ public class Program
 
         SetupConfig(builder);
         SetupLogging(builder, verbose, legacyConsole, defaultYes);
+        SetupAuth(builder.Services);
 
         var host = builder.Build();
         var provider = host.Services;
@@ -97,6 +99,7 @@ public class Program
         rootCommand.Add(deltaCommand);
 
         rootCommand.AddCommand<LoginCommand, LoginCommandRunner, LoginOptions>(provider);
+        rootCommand.AddCommand<LogoutCommand, LogoutCommandRunner, LogoutOptions>(provider);
         
         var cli = new CliConfiguration(rootCommand);
         return await cli.InvokeAsync(args);
@@ -131,6 +134,20 @@ public class Program
 
         Log.Logger = conf.CreateLogger();
         builder.Logging.AddSerilog();
+    }
+
+    private static void SetupAuth(IServiceCollection services)
+    {
+        services.AddHttpClient<IAuthenticationClient, AuthenticationClient>();
+        if (VelopackRuntimeInfo.IsWindows) {
+            services.AddSingleton<ICredentialStore, WindowsCredentialStore>();
+        } else if (VelopackRuntimeInfo.IsOSX) {
+            //TODO: Replace with something better
+            services.AddSingleton<ICredentialStore, FileCredentialStore>();
+        } else if (VelopackRuntimeInfo.IsLinux) {
+            //TODO: Replace with something better
+            services.AddSingleton<ICredentialStore, FileCredentialStore>();
+        }
     }
 }
 
