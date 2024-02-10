@@ -139,15 +139,6 @@ public class Program
     private static void SetupAuth(IServiceCollection services)
     {
         services.AddHttpClient<IAuthenticationClient, AuthenticationClient>();
-        if (VelopackRuntimeInfo.IsWindows) {
-            services.AddSingleton<ICredentialStore, WindowsCredentialStore>();
-        } else if (VelopackRuntimeInfo.IsOSX) {
-            //TODO: Replace with something better
-            services.AddSingleton<ICredentialStore, FileCredentialStore>();
-        } else if (VelopackRuntimeInfo.IsLinux) {
-            //TODO: Replace with something better
-            services.AddSingleton<ICredentialStore, FileCredentialStore>();
-        }
     }
 }
 

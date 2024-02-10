@@ -1,16 +1,20 @@
 ﻿using System.Net.Http;
 using System.Net.Http.Json;
-using System.Text.Json.Serialization;
+using Microsoft.Extensions.Options;
+using Microsoft.Identity.Client;
+using Microsoft.Identity.Client.Extensions.Msal;
 using Velopack.Packaging.Abstractions;
 using Velopack.Vpk.Commands;
 
 namespace Velopack.Vpk.Auth;
+#nullable enable
 
-internal class AuthenticationClient(HttpClient client, IFancyConsole console, ICredentialStore credentialStore) : IAuthenticationClient
+internal class AuthenticationClient(HttpClient client, IFancyConsole console) : IAuthenticationClient
 {
     private HttpClient Client { get; } = client;
     private IFancyConsole Console { get; } = console;
-    private ICredentialStore CredentialStore { get; } = credentialStore;
+
+    private static readonly string[] Scopes = ["openid", "offline_access"];
 
     public async Task<bool> LoginAsync(VelopackServiceOptions options)
     {
@@ -18,31 +22,112 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console, IC
 
         AuthConfiguration authConfiguration = await GetAuthConfiguration(Client, options);
 
-        var response = await StartDeviceFlowAsync(Client, authConfiguration) ?? throw new Exception("Failed to start device flow.");
+        IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
 
-        Console.WriteLine($"To sign in, use a web browser to open the page {response.VerificationUri} and enter the code {response.UserCode}.");
+        AuthenticationResult? rv = 
+            await AcquireSilentlyAsync(pca) ??
+            await AcquireInteractiveAsync(pca, authConfiguration) ?? 
+            await AcquireByDeviceCodeAsync(pca);
 
-        var token = await PollForTokenAsync(Client, authConfiguration, response);
-
-        if (token is { AccessToken.Length: > 0, RefreshToken.Length: > 0 }) {
-            VpkCredential credential = new() {
-                AccessToken = token.AccessToken,
-                RefreshToken = token.RefreshToken
-            };
-            await CredentialStore.StoreAsync(credential);
-
-            Console.WriteLine("Successfully logged in");
-            return true;
-        }
-
-        Console.WriteLine("Failed to login");
-        return false;
+        return rv != null;
     }
 
-    public async Task LogoutAsync()
+    private static async Task<AuthenticationResult?> AcquireSilentlyAsync(IPublicClientApplication pca)
     {
-        await CredentialStore.ClearAsync<VpkCredential>();
+        try {
+            var account = (await pca.GetAccountsAsync()).FirstOrDefault();
+
+            if (account is not null) {
+                return await pca.AcquireTokenSilent(Scopes, account)
+                    .ExecuteAsync();
+            }
+        } catch (MsalException) {
+            // No token found in the cache or Azure AD insists that a form interactive auth is required (e.g. the tenant admin turned on MFA)
+        }
+        return null;
+    }
+
+    private static async Task<AuthenticationResult?> AcquireInteractiveAsync(IPublicClientApplication pca, AuthConfiguration authConfiguration)
+    {
+        try {
+            return await pca.AcquireTokenInteractive(Scopes)
+                        .WithB2CAuthority(authConfiguration.B2CAuthority)
+                        .ExecuteAsync();
+        } catch (MsalException) {
+        }
+        return null;
+    }
+
+    private async Task<AuthenticationResult?> AcquireByDeviceCodeAsync(IPublicClientApplication pca)
+    {
+        try {
+            var result = await pca.AcquireTokenWithDeviceCode(Scopes,
+                deviceCodeResult => {
+                    // This will print the message on the console which tells the user where to go sign-in using 
+                    // a separate browser and the code to enter once they sign in.
+                    // The AcquireTokenWithDeviceCode() method will poll the server after firing this
+                    // device code callback to look for the successful login of the user via that browser.
+                    // This background polling (whose interval and timeout data is also provided as fields in the 
+                    // deviceCodeCallback class) will occur until:
+                    // * The user has successfully logged in via browser and entered the proper code
+                    // * The timeout specified by the server for the lifetime of this code (typically ~15 minutes) has been reached
+                    // * The developing application calls the Cancel() method on a CancellationToken sent into the method.
+                    //   If this occurs, an OperationCanceledException will be thrown (see catch below for more details).
+                    Console.WriteLine(deviceCodeResult.Message);
+                    return Task.FromResult(0);
+                }).ExecuteAsync();
+
+            Console.WriteLine(result.Account.Username);
+            return result;
+        } catch (MsalException) {
+        }
+        return null;
+    }
+
+    public async Task LogoutAsync(VelopackServiceOptions options)
+    {
+        AuthConfiguration authConfiguration = await GetAuthConfiguration(Client, options);
+
+        IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
+
+        // clear the cache
+        while ((await pca.GetAccountsAsync()).FirstOrDefault() is { } account) {
+            await pca.RemoveAsync(account);
+        }
         Console.WriteLine("Cleared saved login to Vellopack");
+    }
+
+    private static async Task<IPublicClientApplication> BuildPublicApplicationAsync(AuthConfiguration authConfiguration)
+    {
+        IPublicClientApplication pca = PublicClientApplicationBuilder
+                .Create(authConfiguration.ClientId)
+                .WithB2CAuthority(authConfiguration.B2CAuthority)
+                .WithRedirectUri(authConfiguration.RedirectUri)
+                //.WithLogging((Microsoft.Identity.Client.LogLevel level, string message, bool containsPii) => System.Console.WriteLine($"[{level}]: {message}"))
+                .Build();
+
+        //https://learn.microsoft.com/entra/msal/dotnet/how-to/token-cache-serialization?tabs=desktop&WT.mc_id=DT-MVP-5003472
+        string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string vpkPath = Path.Combine(userPath, ".vpk");
+        //TODO: Put in proper values
+        var storageProperties =
+             new StorageCreationPropertiesBuilder("creds.bin", vpkPath)
+             .WithLinuxKeyring(
+                 "schema",
+                 "collection",
+                 "secret label",
+                 new KeyValuePair<string, string>("attr1", "value1"),
+                 new KeyValuePair<string, string>("attr2", "value2")
+              )
+             .WithMacKeyChain(
+                 "service name",
+                 "account name")
+             .Build();
+
+        var cacheHelper = await MsalCacheHelper.CreateAsync(storageProperties);
+        cacheHelper.RegisterCache(pca.UserTokenCache);
+
+        return pca;
     }
 
     private static async Task<AuthConfiguration> GetAuthConfiguration(HttpClient client, VelopackServiceOptions loginOptions)
@@ -51,123 +136,20 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console, IC
         var authConfig = await client.GetFromJsonAsync<AuthConfiguration>(authConfigurationEndpoint);
         if (authConfig is null)
             throw new Exception("Failed to get auth configuration.");
-        if (authConfig.TokenEndpoint is null)
-            throw new Exception("Token endpoint not provided.");
-        if (authConfig.DeviceEndpoint is null)
-            throw new Exception("Device endpoint not provided.");
+        if (authConfig.B2CAuthority is null)
+            throw new Exception("B2C Authority not provided.");
+        if (authConfig.RedirectUri is null)
+            throw new Exception("Redirect URI not provided.");
         if (authConfig.ClientId is null)
             throw new Exception("Client ID not provided.");
 
         return authConfig;
     }
 
-    private static async Task<DeviceAuthorizationResponse?> StartDeviceFlowAsync(
-        HttpClient client,
-        AuthConfiguration authConfiguration)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Post, authConfiguration.DeviceEndpoint) {
-            Content = new FormUrlEncodedContent(new Dictionary<string, string> {
-                ["client_id"] = authConfiguration.ClientId!,
-                ["scope"] = "openid profile offline_access"
-            })
-        };
-        var response = await client.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<DeviceAuthorizationResponse>();
-    }
-
-    private static async Task<TokenResponse?> PollForTokenAsync(
-        HttpClient client,
-        AuthConfiguration authConfiguration,
-        DeviceAuthorizationResponse authResponse)
-    {
-        // Poll until we get a valid token response or a fatal error
-        int pollingDelay = authResponse.Interval ?? 10;
-        while (true) {
-            var request = new HttpRequestMessage(HttpMethod.Post, authConfiguration.TokenEndpoint) {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string> {
-                    ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code",
-                    ["device_code"] = authResponse.DeviceCode ?? "",
-                    ["client_id"] = authConfiguration.ClientId!
-                })
-            };
-            var response = await client.SendAsync(request);
-            if (response.IsSuccessStatusCode) {
-                return await response.Content.ReadFromJsonAsync<TokenResponse>();
-            } else {
-                var errorResponse = await response.Content.ReadFromJsonAsync<TokenErrorResponse>();
-                switch (errorResponse?.Error) {
-                case "authorization_pending":
-                    // Not complete yet, wait and try again later
-                    break;
-                case "slow_down":
-                    // Not complete yet, and we should slow down the polling
-                    pollingDelay += 5;
-                    break;
-                default:
-                    // Some other error, nothing we can do but throw
-                    throw new Exception(
-                        $"Authorization failed: {errorResponse?.Error} - {errorResponse?.ErrorDescription}");
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(pollingDelay));
-            }
-        }
-    }
-
-
     private class AuthConfiguration
     {
-        public Uri? DeviceEndpoint { get; init; }
-        public Uri? TokenEndpoint { get; init; }
+        public string? B2CAuthority { get; init; }
+        public string? RedirectUri { get; init; }
         public string? ClientId { get; init; }
-    }
-
-    private class DeviceAuthorizationResponse
-    {
-        [JsonPropertyName("device_code")]
-        public string? DeviceCode { get; set; }
-
-        [JsonPropertyName("user_code")]
-        public string? UserCode { get; set; }
-
-        [JsonPropertyName("verification_uri")]
-        public string? VerificationUri { get; set; }
-
-        [JsonPropertyName("expires_in")]
-        public int? ExpiresIn { get; set; }
-
-        [JsonPropertyName("interval")]
-        public int? Interval { get; set; }
-    }
-
-    private class TokenResponse
-    {
-        [JsonPropertyName("access_token")]
-        public string? AccessToken { get; set; }
-
-        [JsonPropertyName("id_token")]
-        public string? IdToken { get; set; }
-
-        [JsonPropertyName("refresh_token")]
-        public string? RefreshToken { get; set; }
-
-        [JsonPropertyName("token_type")]
-        public string? TokenType { get; set; }
-
-        [JsonPropertyName("expires_in")]
-        public int? ExpiresIn { get; set; }
-
-        [JsonPropertyName("scope")]
-        public string? Scope { get; set; }
-    }
-
-    private class TokenErrorResponse
-    {
-        [JsonPropertyName("error")]
-        public string? Error { get; set; }
-
-        [JsonPropertyName("error_description")]
-        public string? ErrorDescription { get; set; }
     }
 }

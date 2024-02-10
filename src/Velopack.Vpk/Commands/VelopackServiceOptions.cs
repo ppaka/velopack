@@ -10,4 +10,4 @@ public class VelopackServiceOptions
 
 public sealed class LoginOptions: VelopackServiceOptions;
 
-public sealed class LogoutOptions;
+public sealed class LogoutOptions: VelopackServiceOptions;
