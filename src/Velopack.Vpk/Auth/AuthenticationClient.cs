@@ -1,7 +1,4 @@
-﻿using System.Net.Http;
-using System.Net.Http.Json;
-using Microsoft.Extensions.Options;
-using Microsoft.Identity.Client;
+﻿using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Extensions.Msal;
 using Velopack.Packaging.Abstractions;
 using Velopack.Vpk.Commands;
@@ -9,18 +6,15 @@ using Velopack.Vpk.Commands;
 namespace Velopack.Vpk.Auth;
 #nullable enable
 
-internal class AuthenticationClient(HttpClient client, IFancyConsole console) : IAuthenticationClient
+internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole console) : IAuthenticationClient
 {
-    private HttpClient Client { get; } = client;
-    private IFancyConsole Console { get; } = console;
-
     private static readonly string[] Scopes = ["openid", "offline_access"];
 
     public async Task<bool> LoginAsync(VelopackServiceOptions options)
     {
-        Console.WriteLine("Preparing to login to Vellopack");
+        console.WriteLine("Preparing to login to Vellopack");
 
-        AuthConfiguration authConfiguration = await GetAuthConfiguration(Client, options);
+        AuthConfiguration authConfiguration = await client.GetAuthConfigurationAsync(options);
 
         IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
 
@@ -30,12 +24,29 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console) : 
             await AcquireByDeviceCodeAsync(pca);
 
         if (rv != null) {
-            Console.WriteLine("Logged in to Vellopack");
+            client.WithAuthentication(new("Bearer", rv.IdToken ?? rv.AccessToken));
+            var profile = await client.GetProfileAsync(options);
+
+            console.WriteLine($"{profile?.Name} ({profile?.Email}) logged in to Vellopack");
             return true;
         } else {
-            Console.WriteLine("Failed to login to Vellopack");
+            console.WriteLine("Failed to login to Vellopack");
             return false;
         }
+    }
+
+    public async Task LogoutAsync(VelopackServiceOptions options)
+    {
+        AuthConfiguration authConfiguration = await client.GetAuthConfigurationAsync(options);
+
+        IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
+
+        // clear the cache
+        while ((await pca.GetAccountsAsync()).FirstOrDefault() is { } account) {
+            await pca.RemoveAsync(account);
+            console.WriteLine($"Logged out of {account.Username}");
+        }
+        console.WriteLine("Cleared saved login(s) for Vellopack");
     }
 
     private static async Task<AuthenticationResult?> AcquireSilentlyAsync(IPublicClientApplication pca)
@@ -79,28 +90,15 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console) : 
                     // * The timeout specified by the server for the lifetime of this code (typically ~15 minutes) has been reached
                     // * The developing application calls the Cancel() method on a CancellationToken sent into the method.
                     //   If this occurs, an OperationCanceledException will be thrown (see catch below for more details).
-                    Console.WriteLine(deviceCodeResult.Message);
+                    console.WriteLine(deviceCodeResult.Message);
                     return Task.FromResult(0);
                 }).ExecuteAsync();
 
-            Console.WriteLine(result.Account.Username);
+            console.WriteLine(result.Account.Username);
             return result;
         } catch (MsalException) {
         }
         return null;
-    }
-
-    public async Task LogoutAsync(VelopackServiceOptions options)
-    {
-        AuthConfiguration authConfiguration = await GetAuthConfiguration(Client, options);
-
-        IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
-
-        // clear the cache
-        while ((await pca.GetAccountsAsync()).FirstOrDefault() is { } account) {
-            await pca.RemoveAsync(account);
-        }
-        Console.WriteLine("Cleared saved login(s) for Vellopack");
     }
 
     private static async Task<IPublicClientApplication> BuildPublicApplicationAsync(AuthConfiguration authConfiguration)
@@ -115,47 +113,24 @@ internal class AuthenticationClient(HttpClient client, IFancyConsole console) : 
         //https://learn.microsoft.com/entra/msal/dotnet/how-to/token-cache-serialization?tabs=desktop&WT.mc_id=DT-MVP-5003472
         string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string vpkPath = Path.Combine(userPath, ".vpk");
-        //TODO: Put in proper values
+
         var storageProperties =
              new StorageCreationPropertiesBuilder("creds.bin", vpkPath)
              .WithLinuxKeyring(
-                 "schema",
-                 "collection",
-                 "secret label",
-                 new KeyValuePair<string, string>("attr1", "value1"),
-                 new KeyValuePair<string, string>("attr2", "value2")
+                 schemaName: "com.vellopack.app",
+                 collection: "default",
+                 secretLabel: "Credentials for Vellopack's VPK tool",
+                 new KeyValuePair<string, string>("vpk.client-id", authConfiguration.ClientId ?? ""),
+                 new KeyValuePair<string, string>("vpk.version", "v1")
               )
              .WithMacKeyChain(
-                 "service name",
-                 "account name")
+                 serviceName: "vellopack",
+                 accountName: "vpk")
              .Build();
 
         var cacheHelper = await MsalCacheHelper.CreateAsync(storageProperties);
         cacheHelper.RegisterCache(pca.UserTokenCache);
 
         return pca;
-    }
-
-    private static async Task<AuthConfiguration> GetAuthConfiguration(HttpClient client, VelopackServiceOptions loginOptions)
-    {
-        Uri authConfigurationEndpoint = new(new Uri(loginOptions.VelopackBaseUrl, UriKind.Absolute), "/api/v1/auth/config");
-        var authConfig = await client.GetFromJsonAsync<AuthConfiguration>(authConfigurationEndpoint);
-        if (authConfig is null)
-            throw new Exception("Failed to get auth configuration.");
-        if (authConfig.B2CAuthority is null)
-            throw new Exception("B2C Authority not provided.");
-        if (authConfig.RedirectUri is null)
-            throw new Exception("Redirect URI not provided.");
-        if (authConfig.ClientId is null)
-            throw new Exception("Client ID not provided.");
-
-        return authConfig;
-    }
-
-    private class AuthConfiguration
-    {
-        public string? B2CAuthority { get; init; }
-        public string? RedirectUri { get; init; }
-        public string? ClientId { get; init; }
     }
 }

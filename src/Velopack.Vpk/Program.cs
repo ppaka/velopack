@@ -138,7 +138,8 @@ public class Program
 
     private static void SetupAuth(IServiceCollection services)
     {
-        services.AddHttpClient<IAuthenticationClient, AuthenticationClient>();
+        services.AddSingleton<IAuthenticationClient, AuthenticationClient>();
+        services.AddHttpClient<VelopackServiceClient>();
     }
 }
 
