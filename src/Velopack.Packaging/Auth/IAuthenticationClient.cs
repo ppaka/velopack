@@ -1,6 +1,5 @@
-﻿using Velopack.Vpk.Commands;
+﻿namespace Velopack.Packaging.Auth;
 
-namespace Velopack.Vpk.Auth;
 #nullable enable
 public interface IAuthenticationClient
 {

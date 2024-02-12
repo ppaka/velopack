@@ -1,5 +1,5 @@
 ﻿using Velopack.Packaging.Abstractions;
-using Velopack.Vpk.Auth;
+using Velopack.Packaging.Auth;
 
 #nullable enable
 namespace Velopack.Vpk.Commands;

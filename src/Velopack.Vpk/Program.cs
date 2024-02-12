@@ -6,11 +6,11 @@ using Serilog;
 using Serilog.Events;
 using Velopack.Deployment;
 using Velopack.Packaging.Abstractions;
+using Velopack.Packaging.Auth;
 using Velopack.Packaging.Commands;
 using Velopack.Packaging.Exceptions;
 using Velopack.Packaging.Unix.Commands;
 using Velopack.Packaging.Windows.Commands;
-using Velopack.Vpk.Auth;
 using Velopack.Vpk.Commands;
 using Velopack.Vpk.Converters;
 using Velopack.Vpk.Logging;
@@ -131,6 +131,7 @@ public class Program
             builder.Services.AddSingleton<IFancyConsole, SpectreConsole>();
             conf.WriteTo.Spectre();
         }
+        builder.Services.AddSingleton<IConsole>(sp => sp.GetRequiredService<IFancyConsole>());
 
         Log.Logger = conf.CreateLogger();
         builder.Logging.AddSerilog();

@@ -1,12 +1,12 @@
-﻿using Microsoft.Identity.Client;
+﻿
+using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Extensions.Msal;
 using Velopack.Packaging.Abstractions;
-using Velopack.Vpk.Commands;
 
-namespace Velopack.Vpk.Auth;
 #nullable enable
+namespace Velopack.Packaging.Auth;
 
-internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole console) : IAuthenticationClient
+public class AuthenticationClient(VelopackServiceClient client, IConsole console) : IAuthenticationClient
 {
     private static readonly string[] Scopes = ["openid", "offline_access"];
 
@@ -18,9 +18,9 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
 
         IPublicClientApplication pca = await BuildPublicApplicationAsync(authConfiguration);
 
-        AuthenticationResult? rv = 
+        var rv =
             await AcquireSilentlyAsync(pca) ??
-            await AcquireInteractiveAsync(pca, authConfiguration) ?? 
+            await AcquireInteractiveAsync(pca, authConfiguration) ??
             await AcquireByDeviceCodeAsync(pca);
 
         if (rv != null) {
@@ -80,7 +80,7 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
         try {
             var result = await pca.AcquireTokenWithDeviceCode(Scopes,
                 deviceCodeResult => {
-                    // This will print the message on the console which tells the user where to go sign-in using 
+                    // This will print the message on the logger which tells the user where to go sign-in using 
                     // a separate browser and the code to enter once they sign in.
                     // The AcquireTokenWithDeviceCode() method will poll the server after firing this
                     // device code callback to look for the successful login of the user via that browser.
@@ -111,8 +111,8 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
                 .Build();
 
         //https://learn.microsoft.com/entra/msal/dotnet/how-to/token-cache-serialization?tabs=desktop&WT.mc_id=DT-MVP-5003472
-        string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string vpkPath = Path.Combine(userPath, ".vpk");
+        var userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var vpkPath = Path.Combine(userPath, ".vpk");
 
         var storageProperties =
              new StorageCreationPropertiesBuilder("creds.bin", vpkPath)

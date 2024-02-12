@@ -1,4 +1,6 @@
-﻿namespace Velopack.Vpk.Commands;
+﻿using Velopack.Packaging;
+
+namespace Velopack.Vpk.Commands;
 
 public abstract class VelopackServiceCommand : BaseCommand
 {
