@@ -12,7 +12,7 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
 
     public async Task<bool> LoginAsync(VelopackServiceOptions options)
     {
-        console.WriteLine("Preparing to login to Vellopack");
+        console.WriteLine("Preparing to login to Velopack");
 
         AuthConfiguration authConfiguration = await client.GetAuthConfigurationAsync(options);
 
@@ -27,10 +27,10 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
             client.WithAuthentication(new("Bearer", rv.IdToken ?? rv.AccessToken));
             var profile = await client.GetProfileAsync(options);
 
-            console.WriteLine($"{profile?.Name} ({profile?.Email}) logged in to Vellopack");
+            console.WriteLine($"{profile?.Name} ({profile?.Email}) logged in to Velopack");
             return true;
         } else {
-            console.WriteLine("Failed to login to Vellopack");
+            console.WriteLine("Failed to login to Velopack");
             return false;
         }
     }
@@ -46,7 +46,7 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
             await pca.RemoveAsync(account);
             console.WriteLine($"Logged out of {account.Username}");
         }
-        console.WriteLine("Cleared saved login(s) for Vellopack");
+        console.WriteLine("Cleared saved login(s) for Velopack");
     }
 
     private static async Task<AuthenticationResult?> AcquireSilentlyAsync(IPublicClientApplication pca)
@@ -117,14 +117,14 @@ internal class AuthenticationClient(VelopackServiceClient client, IFancyConsole 
         var storageProperties =
              new StorageCreationPropertiesBuilder("creds.bin", vpkPath)
              .WithLinuxKeyring(
-                 schemaName: "com.vellopack.app",
+                 schemaName: "com.velopack.app",
                  collection: "default",
-                 secretLabel: "Credentials for Vellopack's VPK tool",
+                 secretLabel: "Credentials for Velopack's VPK tool",
                  new KeyValuePair<string, string>("vpk.client-id", authConfiguration.ClientId ?? ""),
                  new KeyValuePair<string, string>("vpk.version", "v1")
               )
              .WithMacKeyChain(
-                 serviceName: "vellopack",
+                 serviceName: "velopack",
                  accountName: "vpk")
              .Build();
 
