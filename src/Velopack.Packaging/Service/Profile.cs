@@ -1,4 +1,4 @@
-﻿namespace Velopack.Packaging.Auth;
+﻿namespace Velopack.Packaging.Service;
 
 #nullable enable
 public class Profile

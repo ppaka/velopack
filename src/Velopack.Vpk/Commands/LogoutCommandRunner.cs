@@ -1,15 +1,13 @@
 ﻿using Velopack.Packaging.Abstractions;
-using Velopack.Packaging.Auth;
+using Velopack.Packaging.Service;
 
 #nullable enable
 namespace Velopack.Vpk.Commands;
 
-internal class LogoutCommandRunner(IAuthenticationClient authenticationClient) : ICommand<LogoutOptions>
+internal class LogoutCommandRunner(IVelopackServiceClient Client) : ICommand<LogoutOptions>
 {
-    private IAuthenticationClient AuthenticationClient { get; } = authenticationClient;
-
     public async Task Run(LogoutOptions options)
     {
-        await AuthenticationClient.LogoutAsync(options);
+        await Client.LogoutAsync(options);
     }
 }

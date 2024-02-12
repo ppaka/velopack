@@ -1,4 +1,4 @@
-﻿using Velopack.Packaging;
+﻿using Velopack.Packaging.Service;
 
 namespace Velopack.Vpk.Commands;
 

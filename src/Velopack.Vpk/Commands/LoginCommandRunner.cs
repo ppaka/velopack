@@ -1,15 +1,16 @@
 ﻿using Velopack.Packaging.Abstractions;
-using Velopack.Packaging.Auth;
+using Velopack.Packaging.Service;
 
 namespace Velopack.Vpk.Commands;
 #nullable enable
 
-public class LoginCommandRunner(IAuthenticationClient authenticationClient) : ICommand<LoginOptions>
+public class LoginCommandRunner(IVelopackServiceClient Client) : ICommand<LoginOptions>
 {
-    private IAuthenticationClient AuthenticationClient { get; } = authenticationClient;
 
     public async Task Run(LoginOptions options)
     {
-        await AuthenticationClient.LoginAsync(options);
+        await Client.LoginAsync(new() {
+            VelopackBaseUrl = options.VelopackBaseUrl
+        });
     }
 }

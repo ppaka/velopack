@@ -6,9 +6,9 @@ using Serilog;
 using Serilog.Events;
 using Velopack.Deployment;
 using Velopack.Packaging.Abstractions;
-using Velopack.Packaging.Auth;
 using Velopack.Packaging.Commands;
 using Velopack.Packaging.Exceptions;
+using Velopack.Packaging.Service;
 using Velopack.Packaging.Unix.Commands;
 using Velopack.Packaging.Windows.Commands;
 using Velopack.Vpk.Commands;
@@ -65,7 +65,7 @@ public class Program
 
         SetupConfig(builder);
         SetupLogging(builder, verbose, legacyConsole, defaultYes);
-        SetupAuth(builder.Services);
+        SetupVelopackService(builder.Services);
 
         var host = builder.Build();
         var provider = host.Services;
@@ -137,10 +137,10 @@ public class Program
         builder.Logging.AddSerilog();
     }
 
-    private static void SetupAuth(IServiceCollection services)
+    private static void SetupVelopackService(IServiceCollection services)
     {
-        services.AddSingleton<IAuthenticationClient, AuthenticationClient>();
-        services.AddHttpClient<VelopackServiceClient>();
+        services.AddSingleton<IVelopackServiceClient, VelopackServiceClient>();
+        services.AddHttpClient();
     }
 }
 
