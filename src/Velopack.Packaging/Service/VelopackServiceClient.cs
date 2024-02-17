@@ -1,5 +1,4 @@
-﻿using System.Text;
-using Microsoft.Identity.Client;
+﻿using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Extensions.Msal;
 using Velopack.Packaging.Abstractions;
 
@@ -54,7 +53,7 @@ public class VelopackServiceClient(HttpClient HttpClient, IConsole Console) : IV
             HttpClient.DefaultRequestHeaders.Authorization = new("Bearer", rv.IdToken ?? rv.AccessToken);
             var profile = await GetProfileAsync(options);
 
-            Console.WriteLine($"{profile?.Name} ({profile?.Email}) logged into Velopack");
+            Console.WriteLine($"{profile?.Name} logged into Velopack");
             return true;
         } else {
             Console.WriteLine("Failed to login to Velopack");
@@ -214,7 +213,7 @@ public class VelopackServiceClient(HttpClient HttpClient, IConsole Console) : IV
                 .Create(authConfiguration.ClientId)
                 .WithB2CAuthority(authConfiguration.B2CAuthority)
                 .WithRedirectUri(authConfiguration.RedirectUri)
-                .WithLogging((LogLevel level, string message, bool containsPii) => System.Console.WriteLine($"[{level}]: {message}"))
+                //.WithLogging((LogLevel level, string message, bool containsPii) => System.Console.WriteLine($"[{level}]: {message}"))
                 .WithClientName("velopack")
                 .Build();
 

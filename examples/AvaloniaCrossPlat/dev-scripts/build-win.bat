@@ -31,4 +31,8 @@ dotnet publish -c Release --no-self-contained -r win-x64 -o publish -p:UseLocalV
 
 echo.
 echo Building Velopack Release v%version%
-%~dp0..\..\..\build\Debug\net8.0\vpk pack -u AvaloniaCrossPlat -o releases -p publish -f net8-x64-desktop -v %*
+REM %~dp0..\..\..\build\Debug\net8.0\vpk pack -u AvaloniaCrossPlat -o releases -p publish -f net8-x64-desktop -v %*
+
+echo .
+echo Publishing to Velopack
+REM %~dp0..\..\..\build\Debug\net8.0\vpk publish -t "Test Team" -p "Avalonia" -o releases

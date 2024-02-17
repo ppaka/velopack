@@ -1,4 +1,4 @@
-﻿using Riok.Mapperly.Abstractions;
+using Riok.Mapperly.Abstractions;
 using Velopack.Deployment;
 using Velopack.Packaging.Commands;
 using Velopack.Packaging.Unix.Commands;
@@ -28,6 +28,7 @@ public static partial class OptionMapper
     public static partial DeltaPatchOptions ToOptions(this DeltaPatchCommand cmd);
     public static partial LoginOptions ToOptions(this LoginCommand cmd);
     public static partial LogoutOptions ToOptions(this LogoutCommand cmd);
+    public static partial VelopackUploadOptions ToOptions(this VelopackPublishCommand cmd);
 
     private static DirectoryInfo StringToDirectoryInfo(string t)
     {

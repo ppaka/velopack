@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Microsoft.Extensions.Logging;
 using Velopack;
+using Velopack.Sources;
 
 namespace AvaloniaCrossPlat;
 
@@ -16,7 +17,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _um = new UpdateManager(Program.UpdateUrl, logger: Program.Log);
+        _um = new UpdateManager(new VelopackUpdateSource(), logger: Program.Log);
+        
         TextLog.Text = Program.Log.ToString();
         Program.Log.LogUpdated += LogUpdated;
         UpdateStatus();
