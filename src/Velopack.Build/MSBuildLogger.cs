@@ -20,13 +20,13 @@ public class MSBuildLogger(TaskLoggingHelper loggingHelper) : ILogger, IFancyCon
 
     public async Task ExecuteProgressAsync(Func<IFancyConsoleProgress, Task> action)
     {
-        await action(this);
+        await action(this).ConfigureAwait(false);
     }
 
     public async Task RunTask(string name, Func<Action<int>, Task> fn)
     {
         try {
-            await fn(x => { });
+            await fn(x => { }).ConfigureAwait(false);
         } catch (Exception ex) {
             this.LogError(ex, "Error running task {0}", name);
         }

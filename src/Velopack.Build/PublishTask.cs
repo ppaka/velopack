@@ -32,7 +32,7 @@ public class PublishTask : MSBuildAsyncTask
             AllowDeviceCodeFlow = false,
             AllowInteractiveLogin = false,
             VelopackBaseUrl = ServiceUrl
-        })) {
+        }).ConfigureAwait(false)) {
             Logger.LogWarning("Not logged into Velopack service, skipping publish. Please run vpk login.");
             return true;
         }
@@ -51,7 +51,7 @@ public class PublishTask : MSBuildAsyncTask
 
             await client.UploadReleaseAssetAsync(new UploadOptions(fileStream, asset.FileName, Channel) {
                 VelopackBaseUrl = ServiceUrl
-            });
+            }).ConfigureAwait(false);
 
             Logger.LogInformation($"Uploaded {asset.FileName} to Velopack");
         }

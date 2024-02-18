@@ -50,7 +50,7 @@ public class PackTask : MSBuildAsyncTask
                 Runtimes = Runtimes,
                 TargetRuntime = targetRuntime,
                 PackVersion = PackVersion,
-            });
+            }).ConfigureAwait(false);
 
             Log.LogMessage(MessageImportance.High, $"{PackId} ({PackVersion}) created in {ReleaseDirectory}");
         } else if (VelopackRuntimeInfo.IsOSX) {
