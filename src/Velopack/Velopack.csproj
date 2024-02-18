@@ -53,4 +53,10 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[8.0.0,)" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="UnityEngine">
+      <HintPath>..\..\UnityEngine.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
 </Project>

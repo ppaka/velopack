@@ -1,5 +1,6 @@
 ﻿using System;
 using System.ComponentModel;
+using UnityEngine;
 
 namespace Velopack
 {
@@ -22,7 +23,7 @@ namespace Velopack
         public void ApplyUpdatesAndRestart(VelopackAsset? toApply, string[]? restartArgs = null)
         {
             WaitExitThenApplyUpdates(toApply, silent: false, restart: true, restartArgs);
-            Environment.Exit(0);
+            Application.Quit(0);
         }
 
         /// <inheritdoc cref="ApplyUpdatesAndExit(VelopackAsset)"/>
@@ -41,7 +42,7 @@ namespace Velopack
         public void ApplyUpdatesAndExit(VelopackAsset? toApply)
         {
             WaitExitThenApplyUpdates(toApply, silent: true, restart: false);
-            Environment.Exit(0);
+            Application.Quit(0);
         }
 
         /// <summary>

@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NuGet.Versioning;
+using Application = UnityEngine.Application;
 using Velopack.Locators;
 
 namespace Velopack
@@ -93,7 +94,7 @@ namespace Velopack
 
         /// <summary>
         /// WARNING: FastCallback hooks are run during critical stages of Velopack operations.
-        /// Your code will be run and then <see cref="Environment.Exit(int)"/> will be called.
+        /// Your code will be run and then <see cref="Application.Quit(int)"/> will be called.
         /// If your code has not completed within 30 seconds, it will be terminated.
         /// Only supported on windows; On other operating systems, this will never be called.
         /// </summary>
@@ -106,7 +107,7 @@ namespace Velopack
 
         /// <summary>
         /// WARNING: FastCallback hooks are run during critical stages of Velopack operations.
-        /// Your code will be run and then <see cref="Environment.Exit(int)"/> will be called.
+        /// Your code will be run and then <see cref="Application.Quit(int)"/> will be called.
         /// If your code has not completed within 15 seconds, it will be terminated.
         /// Only supported on windows; On other operating systems, this will never be called.
         /// </summary>
@@ -119,7 +120,7 @@ namespace Velopack
 
         /// <summary>
         /// WARNING: FastCallback hooks are run during critical stages of Velopack operations.
-        /// Your code will be run and then <see cref="Environment.Exit(int)"/> will be called.
+        /// Your code will be run and then <see cref="Application.Quit(int)"/> will be called.
         /// If your code has not completed within 15 seconds, it will be terminated.
         /// Only supported on windows; On other operating systems, this will never be called.
         /// </summary>
@@ -132,7 +133,7 @@ namespace Velopack
 
         /// <summary>
         /// WARNING: FastCallback hooks are run during critical stages of Velopack operations.
-        /// Your code will be run and then <see cref="Environment.Exit(int)"/> will be called.
+        /// Your code will be run and then <see cref="Application.Quit(int)"/> will be called.
         /// If your code has not completed within 30 seconds, it will be terminated.
         /// Only supported on windows; On other operating systems, this will never be called.
         /// </summary>
@@ -257,7 +258,7 @@ namespace Velopack
         private void Exit(int code)
         {
             if (!VelopackRuntimeInfo.InUnitTestRunner) {
-                Environment.Exit(code);
+                Application.Quit(code);
             }
         }
     }
