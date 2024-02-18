@@ -1,4 +1,5 @@
-﻿using Microsoft.Identity.Client;
+﻿using System.IO.Pipes;
+using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Extensions.Msal;
 using Velopack.Packaging.Abstractions;
 
@@ -138,15 +139,16 @@ public class VelopackServiceClient(HttpClient HttpClient, IConsole Console) : IV
 
     private static async Task<AuthenticationResult?> AcquireSilentlyAsync(IPublicClientApplication pca)
     {
-        try {
-            var account = (await pca.GetAccountsAsync()).FirstOrDefault();
-
-            if (account is not null) {
-                return await pca.AcquireTokenSilent(Scopes, account)
-                    .ExecuteAsync();
+        foreach (var account in await pca.GetAccountsAsync()) {
+            try {
+                if (account is not null) {
+                    return await pca.AcquireTokenSilent(Scopes, account)
+                        .ExecuteAsync();
+                }
+            } catch (MsalException) {
+                await pca.RemoveAsync(account);
+                // No token found in the cache or Azure AD insists that a form interactive auth is required (e.g. the tenant admin turned on MFA)
             }
-        } catch (MsalException) {
-            // No token found in the cache or Azure AD insists that a form interactive auth is required (e.g. the tenant admin turned on MFA)
         }
         return null;
     }
