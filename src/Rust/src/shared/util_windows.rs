@@ -15,6 +15,16 @@ use winsafe::{self as w, co, prelude::*};
 
 use super::bundle::{self, EntryNameInfo, Manifest};
 
+pub fn wait_for_pid_to_exit(pid: u32, ms_to_wait: u32) -> Result<()> {
+    info!("Waiting {}ms for process ({}) to exit.", ms_to_wait, pid);
+    let handle = w::HPROCESS::OpenProcess(co::PROCESS::SYNCHRONIZE, false, pid)?;
+    match handle.WaitForSingleObject(Some(ms_to_wait)) {
+        Ok(co::WAIT::OBJECT_0) => Ok(()),
+        // Ok(co::WAIT::TIMEOUT) => Ok(()),
+        _ => Err(anyhow!("WaitForSingleObject Failed.")),
+    }
+}
+
 pub fn wait_for_parent_to_exit(ms_to_wait: u32) -> Result<()> {
     info!("Reading parent process information.");
     let basic_info = ProcessBasicInformation;
@@ -97,25 +107,35 @@ fn get_processes_running_in_directory<P: AsRef<Path>>(dir: P) -> Result<HashMap<
     let mut oup = HashMap::new();
 
     for pid in get_pids()? {
-        let process = w::HPROCESS::OpenProcess(co::PROCESS::QUERY_LIMITED_INFORMATION, false, pid);
-        if let Err(_) = process {
-            // trace!("Failed to open process: {} ({})", pid, e);
-            continue;
-        }
-
-        let process = process.unwrap();
-        let full_path = process.QueryFullProcessImageName(co::PROCESS_NAME::WIN32);
-        if let Err(_) = full_path {
-            // trace!("Failed to query process path: {} ({})", pid, e);
-            continue;
-        }
-
-        let full_path = full_path.unwrap();
-        let full_path = Path::new(&full_path);
-        if let Ok(is_subpath) = crate::windows::is_sub_path(full_path, dir) {
-            if is_subpath {
-                oup.insert(pid, full_path.to_path_buf());
+        // I don't like using catch_unwind, but QueryFullProcessImageName seems to panic
+        // when it reaches a mingw64 process. This is a workaround.
+        let process_path = std::panic::catch_unwind(|| {
+            let process = w::HPROCESS::OpenProcess(co::PROCESS::QUERY_LIMITED_INFORMATION, false, pid);
+            if let Err(_) = process {
+                // trace!("Failed to open process: {} ({})", pid, e);
+                return None;
             }
+
+            let process = process.unwrap();
+            let full_path = process.QueryFullProcessImageName(co::PROCESS_NAME::WIN32);
+            if let Err(_) = full_path {
+                // trace!("Failed to query process path: {} ({})", pid, e);
+                return None;
+            }
+            return Some(full_path.unwrap());
+        });
+
+        match process_path {
+            Ok(Some(full_path)) => {
+                let full_path = Path::new(&full_path);
+                if let Ok(is_subpath) = crate::windows::is_sub_path(full_path, dir) {
+                    if is_subpath {
+                        oup.insert(pid, full_path.to_path_buf());
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => error!("Fatal panic checking process: {} ({:?})", pid, e),
         }
     }
 
