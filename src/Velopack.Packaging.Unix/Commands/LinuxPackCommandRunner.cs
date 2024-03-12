@@ -54,7 +54,8 @@ Categories=Development;
             // copy existing app files 
             CopyFiles(new DirectoryInfo(packDir), bin, progress, true);
             // app icon
-            File.Copy(Options.Icon, Path.Combine(dir.FullName, Options.PackId + Path.GetExtension(Options.Icon)), true);
+            var icon = Options.Icon ?? HelperFile.GetDefaultAppIcon();
+            File.Copy(icon, Path.Combine(dir.FullName, Options.PackId + Path.GetExtension(icon)), true);
         }
 
         // velopack required files
@@ -62,6 +63,13 @@ Categories=Development;
         File.Copy(HelperFile.GetUpdatePath(), Path.Combine(bin.FullName, "UpdateNix"), true);
         progress(100);
         return Task.FromResult(dir.FullName);
+    }
+
+    protected override string[] GetMainExeSearchPaths(string packDirectory, string mainExeName)
+    {
+        return base.GetMainExeSearchPaths(packDirectory, mainExeName)
+            .Concat(new[] { Path.Combine(packDirectory, "usr", "bin", mainExeName) })
+            .ToArray();
     }
 
     protected override Task CreatePortablePackage(Action<int> progress, string packDir, string outputPath)

@@ -1,4 +1,5 @@
-﻿using System.Text.RegularExpressions;
+﻿using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using NuGet.Versioning;
 using Velopack.Packaging.Abstractions;
@@ -6,6 +7,7 @@ using Velopack.Packaging.Exceptions;
 
 namespace Velopack.Packaging.Unix.Commands;
 
+[SupportedOSPlatform("osx")]
 public class OsxBundleCommandRunner : ICommand<OsxBundleOptions>
 {
     private readonly ILogger _logger;
@@ -23,7 +25,7 @@ public class OsxBundleCommandRunner : ICommand<OsxBundleOptions>
 
     public string Bundle(OsxBundleOptions options)
     {
-        var icon = options.Icon;
+        var icon = options.Icon ?? HelperFile.GetDefaultAppIcon();
         var packId = options.PackId;
         var packDirectory = options.PackDirectory;
         var packVersion = options.PackVersion;
@@ -85,7 +87,7 @@ public class OsxBundleCommandRunner : ICommand<OsxBundleOptions>
         File.Copy(icon, Path.Combine(builder.ResourcesDirectory, Path.GetFileName(icon)));
 
         _logger.Debug("Copying application files into new '.app' bundle");
-        Utility.CopyFiles(new DirectoryInfo(packDirectory), new DirectoryInfo(builder.MacosDirectory));
+        new OsxBuildTools(_logger).CopyPreserveSymlinks(packDirectory, builder.MacosDirectory);
 
         _logger.Debug("Bundle created successfully: " + builder.AppDirectory);
 

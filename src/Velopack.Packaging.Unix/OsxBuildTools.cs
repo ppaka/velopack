@@ -19,7 +19,7 @@ public class OsxBuildTools
     {
         if (String.IsNullOrEmpty(entitlements)) {
             Log.Info("No entitlements specified, using default: " +
-                     "https://docs.microsoft.com/en-us/dotnet/core/install/macos-notarization-issues");
+                     "https://docs.microsoft.com/dotnet/core/install/macos-notarization-issues");
             entitlements = HelperFile.VelopackEntitlements;
         }
 
@@ -70,6 +70,19 @@ public class OsxBuildTools
         Log.Info(Exe.InvokeAndThrowIfNonZero("spctl", args2, null));
     }
 
+    public void CopyPreserveSymlinks(string source, string dest)
+    {
+        if (!Directory.Exists(source)) {
+            throw new ArgumentException("Source directory does not exist: " + source);
+        }
+        Log.Debug($"Copying '{source}' to '{dest}' (preserving symlinks)");
+        
+        // copy the contents of the folder, not the folder itself.
+        var src = source.TrimEnd('/') + "/.";
+        var des = dest.TrimEnd('/') + "/";
+        Log.Debug(Exe.InvokeAndThrowIfNonZero("cp", new[] { "-a", src, des }, null));
+    }
+
     public void CreateInstallerPkg(string appBundlePath, string appTitle, string appId, IEnumerable<KeyValuePair<string, string>> extraContent,
         string pkgOutputPath, string signIdentity, Action<int> progress)
     {
@@ -88,7 +101,7 @@ public class OsxBuildTools
         // copy .app to tmp folder
         var bundleName = Path.GetFileName(appBundlePath);
         var tmpBundlePath = Path.Combine(tmpPayload1, bundleName);
-        Utility.CopyFiles(new DirectoryInfo(appBundlePath), new DirectoryInfo(tmpBundlePath));
+        CopyPreserveSymlinks(appBundlePath, tmpBundlePath);
         progress(10);
 
         // create postinstall scripts to open app after install

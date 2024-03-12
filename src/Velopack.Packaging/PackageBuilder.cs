@@ -70,18 +70,23 @@ public abstract class PackageBuilder<T> : ICommand<T>
         // check that entry exe exists
         var mainExt = options.TargetRuntime.BaseRID == RuntimeOs.Windows ? ".exe" : "";
         var mainExeName = options.EntryExecutableName ?? (options.PackId + mainExt);
-        var mainExePath = Path.Combine(packDirectory, mainExeName);
-
-        // TODO: this is a hack, fix this.
-        if (!File.Exists(mainExePath) && VelopackRuntimeInfo.IsLinux)
-            mainExePath = Path.Combine(packDirectory, "usr", "bin", mainExeName);
-
-        if (!File.Exists(mainExePath)) {
+        var mainSearchPaths = GetMainExeSearchPaths(packDirectory, mainExeName);
+        string mainExePath = null;
+        foreach (var path in mainSearchPaths) {
+            if (File.Exists(path)) {
+                mainExePath = path;
+                break;
+            }
+        }
+        if (mainExePath == null) {
             throw new UserInfoException(
                 $"Could not find main application executable (the one that runs 'VelopackApp.Build().Run()'). " + Environment.NewLine +
-                $"I searched for '{mainExeName}' in {packDirectory}." + Environment.NewLine +
-                $"If your main binary is not named '{mainExeName}', please specify the name with the argument: --mainExe {{yourBinary.exe}}");
+                $"If your main binary is not named '{mainExeName}', please specify the name with the argument: --mainExe {{yourBinary.exe}}" + Environment.NewLine +
+                $"I searched the following paths and none exist: " + Environment.NewLine +
+                String.Join(Environment.NewLine, mainSearchPaths)
+            );
         }
+
         MainExeName = mainExeName;
         MainExePath = mainExePath;
 
@@ -171,6 +176,11 @@ public abstract class PackageBuilder<T> : ICommand<T>
     protected virtual string GetRuntimeDependencies()
     {
         return null;
+    }
+
+    protected virtual string[] GetMainExeSearchPaths(string packDirectory, string mainExeName)
+    {
+        return new[] { Path.Combine(packDirectory, mainExeName) };
     }
 
     protected virtual string GenerateNuspecContent()
@@ -280,30 +290,58 @@ public abstract class PackageBuilder<T> : ICommand<T>
 
     protected virtual void CopyFiles(DirectoryInfo source, DirectoryInfo target, Action<int> progress, bool excludeAnnoyances = false)
     {
-        var excludes = Options.IncludePdb ? REGEX_EXCLUDES : REGEX_EXCLUDES_NO_PDB;
-        var numFiles = source.EnumerateFiles("*", SearchOption.AllDirectories).Count();
-        int currentFile = 0;
+        // On Windows, we can use our custom copy method to avoid annoying files.
+        // On OSX, it's a bit tricker because it's common practice to have internal symlinks which this will recursively copy as directories.
+        // We need to preserve the internal symlinks, so we will use 'cp -a' and then manually delete annoying files.
 
-        void CopyFilesInternal(DirectoryInfo source, DirectoryInfo target)
-        {
-            foreach (var fileInfo in source.GetFiles()) {
-                var path = Path.Combine(target.FullName, fileInfo.Name);
-                currentFile++;
-                progress((int) ((double) currentFile / numFiles * 100));
-                if (excludeAnnoyances && excludes.IsMatch(path)) {
-                    Log.Debug("Skipping because matched exclude pattern: " + path);
-                    continue;
-                }
-                fileInfo.CopyTo(path, true);
-            }
-
-            foreach (var sourceSubDir in source.GetDirectories()) {
-                var targetSubDir = target.CreateSubdirectory(sourceSubDir.Name);
-                CopyFilesInternal(sourceSubDir, targetSubDir);
-            }
+        if (!source.Exists) {
+            throw new ArgumentException("Source directory does not exist: " + source.FullName);
         }
 
-        CopyFilesInternal(source, target);
+        if (VelopackRuntimeInfo.IsWindows) {
+            Log.Debug($"Copying '{source}' to '{target}' (built-in recursive)");
+            var excludes = Options.IncludePdb ? REGEX_EXCLUDES : REGEX_EXCLUDES_NO_PDB;
+            var numFiles = source.EnumerateFiles("*", SearchOption.AllDirectories).Count();
+            int currentFile = 0;
+
+            void CopyFilesInternal(DirectoryInfo source, DirectoryInfo target)
+            {
+                foreach (var fileInfo in source.GetFiles()) {
+                    var path = Path.Combine(target.FullName, fileInfo.Name);
+                    currentFile++;
+                    progress((int) ((double) currentFile / numFiles * 100));
+                    if (excludeAnnoyances && excludes.IsMatch(path)) {
+                        Log.Debug("Skipping because matched exclude pattern: " + path);
+                        continue;
+                    }
+                    fileInfo.CopyTo(path, true);
+                }
+
+                foreach (var sourceSubDir in source.GetDirectories()) {
+                    var targetSubDir = target.CreateSubdirectory(sourceSubDir.Name);
+                    CopyFilesInternal(sourceSubDir, targetSubDir);
+                }
+            }
+
+            CopyFilesInternal(source, target);
+        } else {
+            Log.Debug($"Copying '{source}' to '{target}' (preserving symlinks)");
+            // copy the contents of the folder, not the folder itself.
+            var src = source.FullName.TrimEnd('/') + "/.";
+            var dest = target.FullName.TrimEnd('/') + "/";
+            Log.Debug(Exe.InvokeAndThrowIfNonZero("cp", new[] { "-a", src, dest }, null));
+
+            if (excludeAnnoyances) {
+                foreach (var f in target.EnumerateFiles("*", SearchOption.AllDirectories)) {
+                    if (REGEX_EXCLUDES.IsMatch(f.FullName)) {
+                        Log.Debug("Deleting because matched exclude pattern: " + f.FullName);
+                        f.Delete();
+                    }
+                }
+            }
+
+            progress(100);
+        }
     }
 
     protected virtual void AddContentTypesAndRel(string nuspecPath)
