@@ -32,10 +32,10 @@ public class OsxPackCommandRunner : PackageBuilder<OsxPackOptions>
         var structure = new OsxStructureBuilder(dir.FullName);
         var macosdir = structure.MacosDirectory;
         File.WriteAllText(Path.Combine(macosdir, "sq.version"), GenerateNuspecContent());
-        File.Copy(HelperFile.GetUpdatePath(), Path.Combine(macosdir, "UpdateMac"), true);
+        File.Copy(HelperFile.GetUpdatePath(Options.TargetRuntime, Log), Path.Combine(macosdir, "UpdateMac"), true);
 
         foreach (var f in Directory.GetFiles(macosdir, "*", SearchOption.AllDirectories)) {
-            if (MachO.IsMachOImage(f)) {
+            if (BinDetect.IsMachOImage(f)) {
                 Log.Debug(f + " is a mach-o binary, chmod as executable.");
                 Chmod.ChmodFileAsExecutable(f);
             }
@@ -51,27 +51,29 @@ public class OsxPackCommandRunner : PackageBuilder<OsxPackOptions>
             // if the user pre-bundled the app, we need to look in the Contents/MacOS directory
             return new[] { Path.Combine(packDirectory, "Contents", "MacOS", mainExeName) };
         }
-        return base.GetMainExeSearchPaths(packDirectory, mainExeName);
+
+        return new[] { Path.Combine(packDirectory, mainExeName) };
     }
 
     protected override Task CodeSign(Action<int> progress, string packDir)
     {
         var helper = new OsxBuildTools(Log);
+        var keychainPath = Options.Keychain;
         // code signing all mach-o binaries
-        if (!string.IsNullOrEmpty(Options.SigningAppIdentity) && !string.IsNullOrEmpty(Options.NotaryProfile)) {
+        if (!string.IsNullOrEmpty(Options.SignAppIdentity) && !string.IsNullOrEmpty(Options.NotaryProfile)) {
             progress(-1); // indeterminate
             var zipPath = Path.Combine(TempDir.FullName, "notarize.zip");
-            helper.CodeSign(Options.SigningAppIdentity, Options.SigningEntitlements, packDir);
+            helper.CodeSign(Options.SignAppIdentity, Options.SignEntitlements, packDir, keychainPath);
             helper.CreateDittoZip(packDir, zipPath);
-            helper.Notarize(zipPath, Options.NotaryProfile);
+            helper.Notarize(zipPath, Options.NotaryProfile, keychainPath);
             helper.Staple(packDir);
             helper.SpctlAssessCode(packDir);
             File.Delete(zipPath);
             progress(100);
-        } else if (!string.IsNullOrEmpty(Options.SigningAppIdentity)) {
+        } else if (!string.IsNullOrEmpty(Options.SignAppIdentity)) {
             progress(-1); // indeterminate
             Log.Warn("Package will be signed, but [underline]not notarized[/]. Missing the --notaryProfile option.");
-            helper.CodeSign(Options.SigningAppIdentity, Options.SigningEntitlements, packDir);
+            helper.CodeSign(Options.SignAppIdentity, Options.SignEntitlements, packDir, keychainPath);
             progress(100);
         } else {
             Log.Warn("Package will not be signed or notarized. Missing the --signAppIdentity and --notaryProfile options.");
@@ -82,22 +84,22 @@ public class OsxPackCommandRunner : PackageBuilder<OsxPackOptions>
     protected override Task CreateSetupPackage(Action<int> progress, string releasePkg, string packDir, string pkgPath)
     {
         // create installer package, sign and notarize
-        if (!Options.NoPackage) {
+        if (!Options.NoInst) {
             var helper = new OsxBuildTools(Log);
             Dictionary<string, string> pkgContent = new() {
-                {"welcome", Options.PackageWelcome },
-                {"license", Options.PackageLicense },
-                {"readme", Options.PackageReadme },
-                {"conclusion", Options.PackageConclusion },
+                {"welcome", Options.InstWelcome },
+                {"license", Options.InstLicense },
+                {"readme", Options.InstReadme },
+                {"conclusion", Options.InstConclusion },
             };
 
             var packTitle = Options.PackTitle ?? Options.PackId;
             var packId = Options.PackId;
 
-            if (!string.IsNullOrEmpty(Options.SigningInstallIdentity) && !string.IsNullOrEmpty(Options.NotaryProfile)) {
-                helper.CreateInstallerPkg(packDir, packTitle, packId, pkgContent, pkgPath, Options.SigningInstallIdentity, Utility.CreateProgressDelegate(progress, 0, 60));
+            if (!string.IsNullOrEmpty(Options.SignInstallIdentity) && !string.IsNullOrEmpty(Options.NotaryProfile)) {
+                helper.CreateInstallerPkg(packDir, packTitle, packId, pkgContent, pkgPath, Options.SignInstallIdentity, Utility.CreateProgressDelegate(progress, 0, 60));
                 progress(-1); // indeterminate
-                helper.Notarize(pkgPath, Options.NotaryProfile);
+                helper.Notarize(pkgPath, Options.NotaryProfile, Options.Keychain);
                 progress(80);
                 helper.Staple(pkgPath);
                 progress(90);
@@ -105,7 +107,7 @@ public class OsxPackCommandRunner : PackageBuilder<OsxPackOptions>
             } else {
                 Log.Warn("Package installer (.pkg) will not be Notarized. " +
                          "This is supported with the --signInstallIdentity and --notaryProfile arguments.");
-                helper.CreateInstallerPkg(packDir, packTitle, packId, pkgContent, pkgPath, Options.SigningInstallIdentity, progress);
+                helper.CreateInstallerPkg(packDir, packTitle, packId, pkgContent, pkgPath, Options.SignInstallIdentity, progress);
             }
         }
         progress(100);

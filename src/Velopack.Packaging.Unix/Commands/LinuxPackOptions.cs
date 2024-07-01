@@ -30,5 +30,11 @@ public class LinuxPackOptions : IPackOptions
 
     public bool PackIsAppDir { get; set; }
 
-    public bool IncludePdb { get; set; }
+    public string Exclude { get; set; }
+
+    public bool NoPortable { get; set; }
+
+    public bool NoInst { get; set; }
+
+    public string Categories { get; set; }
 }

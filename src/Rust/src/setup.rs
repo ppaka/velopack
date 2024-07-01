@@ -10,6 +10,9 @@ use std::{env, path::PathBuf};
 use velopack::*;
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    windows::mitigate::pre_main_sideload_mitigation();
+
     let mut arg_config = Command::new("Setup")
         .about(format!("Velopack Setup ({}) installs applications.\nhttps://github.com/velopack/velopack", env!("NGBV_VERSION")))
         .arg(arg!(-s --silent "Hides all dialogs and answers 'yes' to all prompts"))
@@ -31,7 +34,7 @@ fn main() -> Result<()> {
     let nocolor = matches.get_flag("nocolor");
 
     shared::dialogs::set_silent(silent);
-    logging::setup_logging(logfile, true, verbose, nocolor)?;
+    logging::setup_logging("setup", logfile, true, verbose, nocolor)?;
 
     info!("Starting Velopack Setup ({})", env!("NGBV_VERSION"));
     info!("    Location: {:?}", std::env::current_exe()?);

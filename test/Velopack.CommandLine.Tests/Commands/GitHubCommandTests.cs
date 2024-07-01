@@ -1,5 +1,5 @@
 ﻿using System.CommandLine;
-using Velopack.Vpk.Commands;
+using Velopack.Vpk.Commands.Deployment;
 
 namespace Velopack.CommandLine.Tests.Commands;
 
@@ -96,5 +96,27 @@ public class GitHubUploadCommandTests : GitHubCommandTests<GitHubUploadCommand>
         ParseResult parseResult = command.ParseAndApply(cli);
 
         Assert.Equal("my release", command.ReleaseName);
+    }
+
+    [Fact]
+    public void Tag_WithTag_ParsesValue()
+    {
+        var command = new GitHubUploadCommand();
+
+        string cli = GetRequiredDefaultOptions() + $"--tag \"v1.2.3\"";
+        ParseResult parseResult = command.ParseAndApply(cli);
+
+        Assert.Equal("v1.2.3", command.TagName);
+    }
+
+    [Fact]
+    public void TargetCommitish_WithTargetCommitish_ParsesValue()
+    {
+        var command = new GitHubUploadCommand();
+
+        string cli = GetRequiredDefaultOptions() + $"--targetCommitish \"main\"";
+        ParseResult parseResult = command.ParseAndApply(cli);
+
+        Assert.Equal("main", command.TargetCommitish);
     }
 }

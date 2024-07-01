@@ -163,6 +163,25 @@ namespace Velopack
             }
         }
 
+        /// <inheritdoc cref="CalculateStreamSHA256"/>
+        public static string CalculateFileSHA256(string filePath)
+        {
+            var bufferSize = 1000000; // 1mb
+            using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize)) {
+                return CalculateStreamSHA256(stream);
+            }
+        }
+
+        /// <summary>
+        /// Get SHA256 hash of the specified file and returns the result as a base64 encoded string (with length 44)
+        /// </summary>
+        public static string CalculateStreamSHA256(Stream file)
+        {
+            using (var sha256 = SHA256.Create()) {
+                return BitConverter.ToString(sha256.ComputeHash(file)).Replace("-", String.Empty);
+            }
+        }
+
         public static Sources.IFileDownloader CreateDefaultDownloader()
         {
             return new Sources.HttpClientFileDownloader();
@@ -262,6 +281,28 @@ namespace Velopack
                         while (partition.MoveNext())
                             await body(partition.Current).ConfigureAwait(false);
                 }));
+        }
+
+        /// <summary>
+        /// Escapes file name such that the file name is safe for writing to disk in the packages folder
+        /// </summary>
+        public static string GetSafeFilename(string fileName)
+        {
+            string safeFileName = Path.GetFileName(fileName);
+            char[] invalidFileNameChars = Path.GetInvalidFileNameChars();
+
+            if (safeFileName.IndexOfAny(invalidFileNameChars) != -1) {
+                StringBuilder safeName = new();
+                foreach (char ch in safeFileName) {
+                    if (Array.IndexOf(invalidFileNameChars, ch) == -1)
+                        safeName.Append(ch);
+                    else
+                        safeName.Append('_');
+                }
+                safeFileName = safeName.ToString();
+            }
+
+            return safeFileName;
         }
 
         public static string GetDefaultTempBaseDirectory()
@@ -486,8 +527,7 @@ namespace Velopack
 
         public static bool IsHttpUrl(string urlOrPath)
         {
-            var uri = default(Uri);
-            if (!Uri.TryCreate(urlOrPath, UriKind.Absolute, out uri)) {
+            if (!Uri.TryCreate(urlOrPath, UriKind.Absolute, out Uri? uri)) {
                 return false;
             }
 
@@ -643,6 +683,15 @@ namespace Velopack
             if (!File.Exists(source)) throw new FileNotFoundException("File not found", source);
             if (overwrite) File.Delete(dest);
             File.Move(source, dest);
+#endif
+        }
+
+        public static TEnum[] GetEnumValues<TEnum>() where TEnum : struct, Enum
+        {
+#if NET6_0_OR_GREATER
+            return Enum.GetValues<TEnum>();
+#else
+            return Enum.GetValues(typeof(TEnum)).Cast<TEnum>().ToArray();
 #endif
         }
     }

@@ -14,7 +14,7 @@ namespace Velopack.Packaging;
 public abstract class PackageBuilder<T> : ICommand<T>
     where T : class, IPackOptions
 {
-    protected RuntimeOs SupportedTargetOs { get; }
+    protected RuntimeOs TargetOs { get; }
 
     protected ILogger Log { get; }
 
@@ -24,38 +24,40 @@ public abstract class PackageBuilder<T> : ICommand<T>
 
     protected T Options { get; private set; }
 
-    protected string MainExeName { get; private set; }
-
     protected string MainExePath { get; private set; }
 
-    protected string Channel { get; private set; }
-
-    protected string RuntimeDependencies { get; private set; }
+    protected Dictionary<string, string> ExtraNuspecMetadata { get; } = new();
 
     private readonly Regex REGEX_EXCLUDES = new Regex(@".*[\\\/]createdump.*|.*\.vshost\..*|.*\.nupkg$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private readonly Regex REGEX_EXCLUDES_NO_PDB = new Regex(@".*[\\\/]createdump.*|.*\.vshost\..*|.*\.nupkg$|.*\.pdb$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public PackageBuilder(RuntimeOs supportedOs, ILogger logger, IFancyConsole console)
     {
-        SupportedTargetOs = supportedOs;
+        TargetOs = supportedOs;
         Log = logger;
         Console = console;
     }
 
     public async Task Run(T options)
     {
-        if (options.TargetRuntime?.BaseRID != SupportedTargetOs)
-            throw new UserInfoException($"To build packages for {SupportedTargetOs.GetOsLongName()}, " +
-                $"the target rid must be {SupportedTargetOs} (actually was {options.TargetRuntime?.BaseRID}).");
+        if (options.TargetRuntime == null) {
+            options.TargetRuntime = RID.Parse(TargetOs.GetOsShortName());
+        }
 
-        Log.Info("Beginning to package release.");
+        if (options.TargetRuntime.BaseRID != TargetOs) {
+            throw new UserInfoException($"To build packages for {TargetOs.GetOsLongName()}, " +
+                $"the target rid must be {TargetOs} (actually was {options.TargetRuntime?.BaseRID}). " +
+                $"If your real intention was to cross-compile a release for {options.TargetRuntime?.BaseRID} then you " +
+                $"should provide an OS directive: eg. 'vpk [{options.TargetRuntime?.BaseRID.GetOsShortName()}] pack ...'");
+        }
+
+        Log.Info($"Beginning to package Velopack release {options.PackVersion}.");
         Log.Info("Releases Directory: " + options.ReleaseDir.FullName);
 
         var releaseDir = options.ReleaseDir;
-        var channel = options.Channel?.ToLower() ?? ReleaseEntryHelper.GetDefaultChannel(SupportedTargetOs);
-        Channel = channel;
+        var channel = options.Channel?.ToLower() ?? ReleaseEntryHelper.GetDefaultChannel(TargetOs);
+        options.Channel = channel;
 
-        var entryHelper = new ReleaseEntryHelper(releaseDir.FullName, channel, Log);
+        var entryHelper = new ReleaseEntryHelper(releaseDir.FullName, channel, Log, TargetOs);
         if (entryHelper.DoesSimilarVersionExist(SemanticVersion.Parse(options.PackVersion))) {
             if (await Console.PromptYesNo("A release in this channel with the same or greater version already exists. Do you want to continue and potentially overwrite files?") != true) {
                 throw new UserInfoException($"There is a release in channel {channel} which is equal or greater to the current version {options.PackVersion}. Please increase the current package version or remove that release.");
@@ -65,11 +67,9 @@ public abstract class PackageBuilder<T> : ICommand<T>
         var packId = options.PackId;
         var packDirectory = options.PackDirectory;
         var packVersion = options.PackVersion;
-        var semVer = SemanticVersion.Parse(packVersion);
 
         // check that entry exe exists
-        var mainExt = options.TargetRuntime.BaseRID == RuntimeOs.Windows ? ".exe" : "";
-        var mainExeName = options.EntryExecutableName ?? (options.PackId + mainExt);
+        var mainExeName = options.EntryExecutableName ?? options.PackId;
         var mainSearchPaths = GetMainExeSearchPaths(packDirectory, mainExeName);
         string mainExePath = null;
         foreach (var path in mainSearchPaths) {
@@ -87,13 +87,12 @@ public abstract class PackageBuilder<T> : ICommand<T>
             );
         }
 
-        MainExeName = mainExeName;
         MainExePath = mainExePath;
+        options.EntryExecutableName = Path.GetFileName(mainExePath);
 
         using var _1 = Utility.GetTempDirectory(out var pkgTempDir);
         TempDir = new DirectoryInfo(pkgTempDir);
         Options = options;
-        RuntimeDependencies = GetRuntimeDependencies();
 
         ConcurrentBag<(string from, string to)> filesToCopy = new();
 
@@ -113,32 +112,35 @@ public abstract class PackageBuilder<T> : ICommand<T>
                 packDirectory = await PreprocessPackDir(progress, packDirectory);
             });
 
-            if (VelopackRuntimeInfo.IsWindows || VelopackRuntimeInfo.IsOSX) {
+            if (TargetOs != RuntimeOs.Linux) {
                 await ctx.RunTask("Code-sign application", async (progress) => {
                     await CodeSign(progress, packDirectory);
                 });
             }
 
-            var portableTask = ctx.RunTask("Building portable package", async (progress) => {
-                var suggestedName = ReleaseEntryHelper.GetSuggestedPortableName(packId, channel);
-                var path = getIncompletePath(suggestedName);
-                await CreatePortablePackage(progress, packDirectory, path);
-            });
+            Task portableTask = null;
+            if (TargetOs == RuntimeOs.Linux || !Options.NoPortable) {
+                portableTask = ctx.RunTask("Building portable package", async (progress) => {
+                    var suggestedName = ReleaseEntryHelper.GetSuggestedPortableName(packId, channel, TargetOs);
+                    var path = getIncompletePath(suggestedName);
+                    await CreatePortablePackage(progress, packDirectory, path);
+                });
+            }
 
             // TODO: hack, this is a prerequisite for building full package but only on linux
-            if (VelopackRuntimeInfo.IsLinux) await portableTask;
+            if (TargetOs == RuntimeOs.Linux) await portableTask;
 
             string releasePath = null;
             await ctx.RunTask($"Building release {packVersion}", async (progress) => {
-                var suggestedName = ReleaseEntryHelper.GetSuggestedReleaseName(packId, packVersion, channel, false);
+                var suggestedName = ReleaseEntryHelper.GetSuggestedReleaseName(packId, packVersion, channel, false, TargetOs);
                 releasePath = getIncompletePath(suggestedName);
                 await CreateReleasePackage(progress, packDirectory, releasePath);
             });
 
             Task setupTask = null;
-            if (VelopackRuntimeInfo.IsWindows || VelopackRuntimeInfo.IsOSX) {
+            if (!Options.NoInst && TargetOs != RuntimeOs.Linux) {
                 setupTask = ctx.RunTask("Building setup package", async (progress) => {
-                    var suggestedName = ReleaseEntryHelper.GetSuggestedSetupName(packId, channel);
+                    var suggestedName = ReleaseEntryHelper.GetSuggestedSetupName(packId, channel, TargetOs);
                     var path = getIncompletePath(suggestedName);
                     await CreateSetupPackage(progress, releasePath, packDirectory, path);
                 });
@@ -146,21 +148,15 @@ public abstract class PackageBuilder<T> : ICommand<T>
 
             if (prev != null && options.DeltaMode != DeltaMode.None) {
                 await ctx.RunTask($"Building delta {prev.Version} -> {packVersion}", async (progress) => {
-                    var suggestedName = ReleaseEntryHelper.GetSuggestedReleaseName(packId, packVersion, channel, true);
+                    var suggestedName = ReleaseEntryHelper.GetSuggestedReleaseName(packId, packVersion, channel, true, TargetOs);
                     var deltaPkg = await CreateDeltaPackage(progress, releasePath, prev.PackageFile, getIncompletePath(suggestedName), options.DeltaMode);
                 });
             }
 
-            if (!VelopackRuntimeInfo.IsLinux) await portableTask;
+            if (TargetOs != RuntimeOs.Linux && portableTask != null) await portableTask;
             if (setupTask != null) await setupTask;
 
             await ctx.RunTask("Post-process steps", (progress) => {
-                var expectedAssets = VelopackRuntimeInfo.IsLinux ? 2 : 3;
-                if (prev != null && options.DeltaMode != DeltaMode.None) expectedAssets += 1;
-                if (filesToCopy.Count != expectedAssets) {
-                    throw new Exception($"Expected {expectedAssets} assets to be created, but only {filesToCopy.Count} were.");
-                }
-
                 foreach (var f in filesToCopy) {
                     Utility.MoveFile(f.from, f.to, true);
                 }
@@ -173,15 +169,7 @@ public abstract class PackageBuilder<T> : ICommand<T>
         });
     }
 
-    protected virtual string GetRuntimeDependencies()
-    {
-        return null;
-    }
-
-    protected virtual string[] GetMainExeSearchPaths(string packDirectory, string mainExeName)
-    {
-        return new[] { Path.Combine(packDirectory, mainExeName) };
-    }
+    protected abstract string[] GetMainExeSearchPaths(string packDirectory, string mainExeName);
 
     protected virtual string GenerateNuspecContent()
     {
@@ -192,29 +180,35 @@ public abstract class PackageBuilder<T> : ICommand<T>
         var releaseNotes = Options.ReleaseNotes;
         var rid = Options.TargetRuntime;
 
-        string releaseNotesText = "";
+        string extraMetadata = "";
+        void addMetadata(string key, string value)
+        {
+            if (!String.IsNullOrEmpty(key) && !String.IsNullOrEmpty(value)) {
+                if (!SecurityElement.IsValidText(value)) {
+                    value = $"""<![CDATA[{"\n"}{value}{"\n"}]]>""";
+                }
+                extraMetadata += $"<{key}>{value}</{key}>{Environment.NewLine}";
+            }
+        }
+
+        if (ExtraNuspecMetadata.Any()) {
+            foreach (var kvp in ExtraNuspecMetadata) {
+                addMetadata(kvp.Key, kvp.Value);
+            }
+        }
+
         if (!String.IsNullOrEmpty(releaseNotes)) {
             var markdown = File.ReadAllText(releaseNotes);
-            var html = Markdown.ToHtml(markdown);
-            releaseNotesText = $"""
-<releaseNotes>{SecurityElement.Escape(markdown)}</releaseNotes>
-<releaseNotesHtml><![CDATA[{"\n"}{html}{"\n"}]]></releaseNotesHtml>
-""";
+            addMetadata("releaseNotes", markdown);
+            addMetadata("releaseNotesHtml", Markdown.ToHtml(markdown));
         }
 
-        string osMinVersionText = "";
         if (rid?.HasVersion == true) {
-            osMinVersionText = $"<osMinVersion>{rid.Version}</osMinVersion>";
+            addMetadata("osMinVersion", rid.Version.ToString());
         }
 
-        string machineArchitectureText = "";
         if (rid?.HasArchitecture == true) {
-            machineArchitectureText = $"<machineArchitecture>{rid.Architecture}</machineArchitecture>";
-        }
-
-        string runtimeDependenciesText = "";
-        if (!String.IsNullOrWhiteSpace(RuntimeDependencies)) {
-            runtimeDependenciesText = $"<runtimeDependencies>{RuntimeDependencies}</runtimeDependencies>";
+            addMetadata("machineArchitecture", rid.Architecture.ToString());
         }
 
         string nuspec = $"""
@@ -226,14 +220,11 @@ public abstract class PackageBuilder<T> : ICommand<T>
 <description>{packTitle ?? packId}</description>
 <authors>{packAuthors ?? packId}</authors>
 <version>{packVersion}</version>
-<channel>{Channel}</channel>
-<mainExe>{MainExeName}</mainExe>
+<channel>{Options.Channel}</channel>
+<mainExe>{Options.EntryExecutableName}</mainExe>
 <os>{rid.BaseRID.GetOsShortName()}</os>
 <rid>{rid.ToDisplay(RidDisplayType.NoVersion)}</rid>
-{osMinVersionText}
-{machineArchitectureText}
-{releaseNotesText}
-{runtimeDependenciesText}
+{extraMetadata.Trim()}
 </metadata>
 </package>
 """.Trim();
@@ -294,13 +285,17 @@ public abstract class PackageBuilder<T> : ICommand<T>
         // On OSX, it's a bit tricker because it's common practice to have internal symlinks which this will recursively copy as directories.
         // We need to preserve the internal symlinks, so we will use 'cp -a' and then manually delete annoying files.
 
+        Regex manualExclude = null;
+        if (!String.IsNullOrEmpty(Options.Exclude)) {
+            manualExclude = new Regex(Options.Exclude, RegexOptions.Compiled);
+        }
+
         if (!source.Exists) {
             throw new ArgumentException("Source directory does not exist: " + source.FullName);
         }
 
         if (VelopackRuntimeInfo.IsWindows) {
             Log.Debug($"Copying '{source}' to '{target}' (built-in recursive)");
-            var excludes = Options.IncludePdb ? REGEX_EXCLUDES : REGEX_EXCLUDES_NO_PDB;
             var numFiles = source.EnumerateFiles("*", SearchOption.AllDirectories).Count();
             int currentFile = 0;
 
@@ -310,7 +305,7 @@ public abstract class PackageBuilder<T> : ICommand<T>
                     var path = Path.Combine(target.FullName, fileInfo.Name);
                     currentFile++;
                     progress((int) ((double) currentFile / numFiles * 100));
-                    if (excludeAnnoyances && excludes.IsMatch(path)) {
+                    if (excludeAnnoyances && (REGEX_EXCLUDES.IsMatch(path) || manualExclude?.IsMatch(path) == true)) {
                         Log.Debug("Skipping because matched exclude pattern: " + path);
                         continue;
                     }
@@ -333,7 +328,7 @@ public abstract class PackageBuilder<T> : ICommand<T>
 
             if (excludeAnnoyances) {
                 foreach (var f in target.EnumerateFiles("*", SearchOption.AllDirectories)) {
-                    if (REGEX_EXCLUDES.IsMatch(f.FullName)) {
+                    if (excludeAnnoyances && (REGEX_EXCLUDES.IsMatch(f.FullName) || manualExclude?.IsMatch(f.FullName) == true)) {
                         Log.Debug("Deleting because matched exclude pattern: " + f.FullName);
                         f.Delete();
                     }
@@ -350,6 +345,7 @@ public abstract class PackageBuilder<T> : ICommand<T>
         var extensions = Directory.EnumerateFiles(rootDirectory, "*", SearchOption.AllDirectories)
             .Select(p => Path.GetExtension(p).TrimStart('.').ToLower())
             .Distinct()
+            .Where(ext => !String.IsNullOrWhiteSpace(ext))
             .Select(ext => $"""  <Default Extension="{ext}" ContentType="application/octet" />""")
             .ToArray();
 

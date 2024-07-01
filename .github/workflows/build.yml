@@ -2,114 +2,306 @@ name: Build
 
 on: [ push, pull_request ]
 
-env:
-  VELOPACK_GITHUB_TEST_TOKEN: ${{ secrets.VELOPACK_GITHUB_TEST_TOKEN }}
-  VELOPACK_B2_TEST_TOKEN: ${{ secrets.VELOPACK_B2_TEST_TOKEN }}
-
 jobs:
-  build:
+  test-rust-bins:
+    strategy:
+      matrix:
+        os: [macos-13, macos-14, windows-latest, ubuntu-latest]
+        include: 
+          - os: windows-latest
+            rust_flags: "--target i686-pc-windows-msvc --features windows"
+          - os: ubuntu-latest
+            rust_flags: "--target x86_64-unknown-linux-gnu"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dotnet/nbgv@master
+        with:
+          setAllVars: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "rust-test-${{ matrix.os }}"
+          workspaces: "src/Rust -> target"
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Test Rust
+        working-directory: src/Rust
+        run: cargo llvm-cov ${{ matrix.rust_flags }} --cobertura --output-path ../../test/coverage.rust.${{ matrix.os }}.xml
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust-${{ matrix.os }}
+          path: ./test/*.xml
+
+  build-rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dotnet/nbgv@master
+        with:
+          setAllVars: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "rust-build-windows"
+          workspaces: "src/Rust -> target"
+      - name: Install Windows7 Rust Toolchain
+        run: |
+          rustup toolchain install 1.75.0-x86_64-pc-windows-msvc 
+          rustup target add i686-pc-windows-msvc --toolchain 1.75.0-x86_64-pc-windows-msvc 
+      - name: Build Rust
+        working-directory: src/Rust
+        run: cargo +1.75.0-x86_64-pc-windows-msvc build --target i686-pc-windows-msvc --features windows --release
+      - name: Upload Rust Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-windows-latest
+          path: |
+            src/Rust/target/i686-pc-windows-msvc/release/*.exe
+            src/Rust/target/i686-pc-windows-msvc/release/*.pdb
+      - name: Cancel workflow if failed
+        uses: andymckay/cancel-action@0.4
+        if: ${{ failure() }}
+
+  build-rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dotnet/nbgv@master
+        id: nbgv
+        with:
+          setAllVars: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "rust-build-linux"
+          workspaces: "src/Rust -> target"
+      - name: Build Rust (x64)
+        working-directory: src/Rust
+        run: |
+          cargo build --release --target x86_64-unknown-linux-gnu
+          cp ./target/x86_64-unknown-linux-gnu/release/update ./target/release/UpdateNix_x64
+      - name: Build Rust (arm64)
+        working-directory: src/Rust
+        env:
+          CROSS_NuGetPackageVersion: ${{ steps.nbgv.outputs.NuGetPackageVersion }}
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall cross --no-confirm --force
+          cross build --release --target aarch64-unknown-linux-gnu
+          cp ./target/aarch64-unknown-linux-gnu/release/update ./target/release/UpdateNix_arm64
+      - name: Upload Rust Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-ubuntu-latest
+          path: src/Rust/target/release/UpdateNix*
+      - name: Cancel workflow if failed
+        uses: andymckay/cancel-action@0.4
+        if: ${{ failure() }}
+
+  build-rust-macos:
+    strategy:
+      matrix:
+        os: [macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dotnet/nbgv@master
+        with:
+          setAllVars: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "rust-build-${{ matrix.os }}"
+          workspaces: "src/Rust -> target"
+      - name: Build Rust
+        working-directory: src/Rust
+        run: |
+          cargo build --release
+          cp ./target/release/update ./target/release/UpdateMac
+      - name: Upload Rust Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.os }}
+          path: src/Rust/target/release/UpdateMac
+      - name: Cancel workflow if failed
+        uses: andymckay/cancel-action@0.4
+        if: ${{ failure() }}
+
+  build-mac-universal:
+    runs-on: macos-latest
+    needs: [build-rust-macos]
+    steps:
+      - name: Download x64
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-macos-13
+          path: macos-x64
+      - name: Download arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-macos-14
+          path: macos-arm64
+      - name: Create Universal Binary
+        run: |
+          mkdir -p macos-universal
+          lipo -create -output macos-universal/UpdateMac macos-x64/UpdateMac macos-arm64/UpdateMac
+          file macos-universal/UpdateMac
+          lipo -archs macos-universal/UpdateMac
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+          name: rust-macos-*
+      - name: Upload Universal Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-macos-latest
+          path: macos-universal/UpdateMac
+      - name: Cancel workflow if failed
+        uses: andymckay/cancel-action@0.4
+        if: ${{ failure() }}
+
+  test-dotnet:
     strategy:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+      VELOPACK_GITHUB_TEST_TOKEN: ${{ secrets.VELOPACK_GITHUB_TEST_TOKEN }}
+      VELOPACK_B2_TEST_TOKEN: ${{ secrets.VELOPACK_B2_TEST_TOKEN }}
+      VELOPACK_AZ_TEST_TOKEN: ${{ secrets.VELOPACK_AZ_TEST_TOKEN }}
     steps:
-      - name: Print dotnet version
-        run: dotnet --info
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-test-nuget-${{ hashFiles('**/packages.lock.json') }}
-          restore-keys: ${{ runner.os }}-test-nuget-
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Install NBGV
-        run: dotnet tool install -g nbgv
-        if: ${{ matrix.os == 'macos-latest' }}
-        continue-on-error: true
-
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
       - name: Install FUSE
         run: |
           sudo add-apt-repository universe
           sudo apt install libfuse2
         if: ${{ matrix.os == 'ubuntu-latest' }}
-
-      - name: Install .Net Coverage
-        run: dotnet tool install -g dotnet-coverage
-
-      - name: Set Rust Flags (Windows)
-        shell: pwsh
-        run: |
-          rustup target add i686-pc-windows-msvc
-          Add-Content -Path $env:GITHUB_ENV -Value "EXTRA_RUST_FLAGS=--target i686-pc-windows-msvc --features windows"
-        if: ${{ matrix.os == 'windows-latest' }}
-
-      - name: Set Rust Flags (Linux)
-        run: echo "EXTRA_RUST_FLAGS=--target x86_64-unknown-linux-gnu" >> "$GITHUB_ENV"
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-
-      - name: Build Rust
-        working-directory: src/Rust
-        run: cargo build --release ${{ env.EXTRA_RUST_FLAGS }}
-
-      - name: Test Rust
-        working-directory: src/Rust
-        run: cargo llvm-cov ${{ env.EXTRA_RUST_FLAGS }} --cobertura --output-path ../../test/coverage.rust.${{ matrix.os }}.xml
-
-      - name: Collect Rust Binaries (Windows)
-        working-directory: src/Rust/target
-        run: |
-          copy i686-pc-windows-msvc\release\*.exe release
-          copy i686-pc-windows-msvc\release\*.pdb release
-        if: ${{ matrix.os == 'windows-latest' }}
-
-      - name: Collect Rust Binaries (Linux)
-        working-directory: src/Rust/target
-        run: cp ./x86_64-unknown-linux-gnu/release/update ./release/UpdateNix
-        if: ${{ matrix.os == 'ubuntu-latest' }}
-
-      - name: Collect Rust Binaries (OSX)
-        working-directory: src/Rust/target/release
-        run: cp update UpdateMac
+      - name: Install squashfs-tools
+        run: brew install squashfs
         if: ${{ matrix.os == 'macos-latest' }}
-
+      - name: Install dotnet-coverage
+        run: dotnet tool install -g dotnet-coverage
       - name: Build .NET
-        run: dotnet build -c Release 
-
-      - name: Test .NET Velopack.Tests
-        run: dotnet test --no-build -c Release -l "console;verbosity=detailed" test/Velopack.Tests/Velopack.Tests.csproj
-
-      - name: Test .NET Velopack.Packaging.Tests
-        run: dotnet test --no-build -c Release -l "console;verbosity=detailed" test/Velopack.Packaging.Tests/Velopack.Packaging.Tests.csproj
-
-      - name: Test .NET Velopack.CommandLine.Tests
-        run: dotnet test --no-build -c Release -l "console;verbosity=detailed" test/Velopack.CommandLine.Tests/Velopack.CommandLine.Tests.csproj
-
-      - name: Upload Rust Artifacts
+        run: dotnet build -c Release
+      - uses: caesay/wait-artifact-action@494939e840383463b1686ce3624a8aab059c2c8b
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          max_wait_seconds: 900
+          artifacts: rust-macos-latest,rust-windows-latest,rust-ubuntu-latest
+          verbose: true
+      - name: Download Rust Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: src/Rust/target/release
+          pattern: rust-*
+          merge-multiple: true
+      - name: Test Velopack.Tests
+        run: dotnet test test/Velopack.Tests/Velopack.Tests.csproj --no-build -c Release -l "console;verbosity=detailed;consoleLoggerParameters=ErrorsOnly" -l GithubActions -- RunConfiguration.CollectSourceInformation=true
+      - name: Test Velopack.Packaging.Tests
+        run: dotnet test test/Velopack.Packaging.Tests/Velopack.Packaging.Tests.csproj --no-build -c Release -l "console;verbosity=detailed;consoleLoggerParameters=ErrorsOnly" -l GithubActions -- RunConfiguration.CollectSourceInformation=true
+      - name: Test Velopack.CommandLine.Tests
+        run: dotnet test test/Velopack.CommandLine.Tests/Velopack.CommandLine.Tests.csproj --no-build -c Release -l "console;verbosity=detailed;consoleLoggerParameters=ErrorsOnly" -l GithubActions -- RunConfiguration.CollectSourceInformation=true
+      - name: Upload Cross-Compile Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rust-${{ matrix.os }}
-          path: |
-            src/Rust/target/release/UpdateNix
-            src/Rust/target/release/UpdateMac
-            src/Rust/target/release/*.exe
+          name: cross-${{ matrix.os }}
+          path: test/artifacts/*
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-dotnet-${{ matrix.os }}
+          path: ./test/*.xml
 
+  test-cross:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    needs: [test-dotnet]
+    runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Install FUSE
+        run: |
+          sudo add-apt-repository universe
+          sudo apt install libfuse2
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+      - name: Download Cross Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: test/artifacts
+          pattern: cross-*
+          merge-multiple: true
+      - name: Test Cross-Compiled Apps
+        env:
+          VELOPACK_CROSS_ARTIFACTS: true
+        run: dotnet test -c Release test/Velopack.Packaging.Tests/Velopack.Packaging.Tests.csproj --filter "FullyQualifiedName~RunCrossApp" -l "console;verbosity=detailed;consoleLoggerParameters=ErrorsOnly" -l GithubActions -- RunConfiguration.CollectSourceInformation=true
+
+  package:
+    runs-on: ubuntu-latest
+    needs: [build-rust-windows, build-rust-linux, build-mac-universal]
+    steps:
+      - name: Print dotnet version
+        run: dotnet --info
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dotnet/nbgv@master
+        with:
+          setAllVars: true
+      - name: Download Rust Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: src/Rust/target/release
+          pattern: rust-*
+          merge-multiple: true
+      - name: Build .NET
+        run: dotnet build -c Release /p:PackRustAssets=true /p:ContinuousIntegrationBuild=true
+      - name: Write Version File
+        run: echo $NBGV_NuGetPackageVersion > version.txt
+      - name: Upload version file as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-version
+          path: version.txt
+      - name: Upload Package Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: build/Release/*nupkg
+
+  upload-coverage:
+    runs-on: ubuntu-latest
+    needs: [test-rust-bins, test-dotnet, package]
+    steps:
+      - name: Download Coverage Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: ./test
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v4
         env:
@@ -117,51 +309,17 @@ jobs:
         with:
           directory: ./test
           fail_ci_if_error: true
-  
-  package:
+      - uses: geekyeggo/delete-artifact@v5
+        with:
+          name: coverage-*
+
+  release:
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [package, test-cross, test-dotnet, test-rust-bins]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     steps:
-      - name: Print dotnet version
-        run: dotnet --info
-
-      - uses: actions/checkout@v4
+      - name: Invoke Release Workflow
+        uses: benc-uk/workflow-dispatch@v1
         with:
-          fetch-depth: 0
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
-          restore-keys: ${{ runner.os }}-nuget-
-
-      - name: Download Rust OSX
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-macos-latest
-          path: src/Rust/target/release
-
-      - name: Download Rust Windows
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-windows-latest
-          path: src/Rust/target/release
-
-      - name: Download Rust Linux
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-ubuntu-latest
-          path: src/Rust/target/release
-
-      - name: Build .NET
-        run: dotnet build -c Release /p:PackRustAssets=true
-
-      - name: Upload Package Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: packages
-          path: build/Release/*.nupkg
-
-      # - name: Publish to GitHub Packages
-      #   shell: pwsh
-      #   run: dotnet nuget push build/Release/*.nupkg -k ${{ secrets.GITHUB_TOKEN }} -s https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json --skip-duplicate
+          workflow: release.yml
+          inputs: '{ "workflow_run_id": "${{ github.run_id }}" }'

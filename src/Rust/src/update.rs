@@ -16,7 +16,7 @@ fn root_command() -> Command {
     .about(format!("Velopack Updater ({}) manages packages and installs updates.\nhttps://github.com/velopack/velopack", env!("NGBV_VERSION")))
     .subcommand(Command::new("apply")
         .about("Applies a staged / prepared update, installing prerequisite runtimes if necessary")
-        .arg(arg!(-r --restart "Restart the application after the update"))
+        .arg(arg!(--norestart "Do not restart the application after the update"))
         .arg(arg!(-w --wait "Wait for the parent process to terminate before applying the update"))
         .arg(arg!(--waitPid <PID> "Wait for the specified process to terminate before applying the update").value_parser(value_parser!(u32)))
         .arg(arg!(-p --package <FILE> "Update package to apply").value_parser(value_parser!(PathBuf)))
@@ -35,7 +35,9 @@ fn root_command() -> Command {
     .arg(arg!(--nocolor "Disable colored output").hide(true).global(true))
     .arg(arg!(-s --silent "Don't show any prompts / dialogs").global(true))
     .arg(arg!(-l --log <PATH> "Override the default log file location").global(true).value_parser(value_parser!(PathBuf)))
-    .arg(arg!(--forceLatest "Legacy / not used").hide(true))
+    .arg(arg!(--forceLatest "Legacy argument").hide(true).global(true))
+    .arg(arg!(-r --restart "Legacy argument").hide(true).global(true))
+    .ignore_errors(true)
     .disable_help_subcommand(true)
     .flatten_help(true);
 
@@ -62,15 +64,57 @@ fn root_command() -> Command {
 fn parse_command_line_matches(input_args: Vec<String>) -> ArgMatches {
     // Split the arguments manually to handle the legacy `--flag=value` syntax
     // Also, replace `--processStartAndWait` with `--processStart --wait`
-    let args: Vec<String> = input_args
-        .into_iter()
-        .flat_map(|arg| if arg.contains('=') { arg.splitn(2, '=').map(String::from).collect::<Vec<_>>() } else { vec![arg] })
-        .flat_map(|arg| if arg.eq_ignore_ascii_case("--processStartAndWait") { vec!["--processStart".to_string(), "--wait".to_string()] } else { vec![arg] })
-        .collect();
+    let mut args = Vec::new();
+    let mut preserve = false;
+    for arg in input_args {
+        if preserve {
+            args.push(arg);
+        } else if arg == "--" {
+            args.push("--".to_string());
+            preserve = true;
+        } else if arg.eq_ignore_ascii_case("--processStartAndWait") {
+            args.push("--processStart".to_string());
+            args.push("--wait".to_string());
+        } else if arg.starts_with("--processStartAndWait=") {
+            let mut split_arg = arg.splitn(2, '=');
+            split_arg.next(); // Skip the `--processStartAndWait` part
+            args.push("--processStart".to_string());
+            args.push("--wait".to_string());
+            if let Some(rest) = split_arg.next() {
+                args.push(rest.to_string());
+            }
+        } else if arg.contains('=') {
+            let mut split_arg = arg.splitn(2, '=');
+            args.push(split_arg.next().unwrap().to_string());
+            args.push(split_arg.next().unwrap().to_string());
+        } else {
+            args.push(arg);
+        }
+    }
     root_command().get_matches_from(&args)
 }
 
+fn get_flag_or_false(matches: &ArgMatches, id: &str) -> bool {
+    // matches.get_flag throws when used with ignore_errors when any unknown arg is encountered and the flag is not present
+    matches.try_get_one::<bool>(id).unwrap_or(None).map(|x| x.to_owned()).unwrap_or(false)
+}
+
+fn get_op_wait(matches: &ArgMatches) -> shared::OperationWait {
+    let wait_for_parent = get_flag_or_false(&matches, "wait");
+    let wait_pid = matches.try_get_one::<u32>("waitPid").unwrap_or(None).map(|v| v.to_owned());
+    if wait_for_parent {
+        shared::OperationWait::WaitParent
+    } else if wait_pid.is_some() {
+        shared::OperationWait::WaitPid(wait_pid.unwrap())
+    } else {
+        shared::OperationWait::NoWait
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    windows::mitigate::pre_main_sideload_mitigation();
+
     #[cfg(windows)]
     let matches = parse_command_line_matches(env::args().collect());
     #[cfg(unix)]
@@ -78,16 +122,17 @@ fn main() -> Result<()> {
 
     let (subcommand, subcommand_matches) = matches.subcommand().ok_or_else(|| anyhow!("No subcommand was used. Try `--help` for more information."))?;
 
-    let verbose = matches.get_flag("verbose");
-    let silent = matches.get_flag("silent");
-    let nocolor = matches.get_flag("nocolor");
+    let verbose = get_flag_or_false(&matches, "verbose");
+    let silent = get_flag_or_false(&matches, "silent");
+    let nocolor = get_flag_or_false(&matches, "nocolor");
     let log_file = matches.get_one("log");
 
     dialogs::set_silent(silent);
     if let Some(log_file) = log_file {
-        logging::setup_logging(Some(&log_file), true, verbose, nocolor)?;
+        logging::setup_logging("update", Some(&log_file), true, verbose, nocolor)?;
     } else {
-        default_logging(verbose, nocolor, true)?;
+        let default_log_file = logging::default_log_location();
+        logging::setup_logging("update", Some(&default_log_file), true, verbose, nocolor)?;
     }
 
     // change working directory to the parent directory of the exe
@@ -135,36 +180,32 @@ fn patch(matches: &ArgMatches) -> Result<()> {
 }
 
 fn apply(matches: &ArgMatches) -> Result<()> {
-    let restart = matches.get_flag("restart");
-    let wait_for_parent = matches.get_flag("wait");
-    let wait_pid = matches.get_one::<u32>("waitPid").map(|v| v.to_owned());
+    let restart = !get_flag_or_false(&matches, "norestart");
     let package = matches.get_one::<PathBuf>("package");
     let exe_args: Option<Vec<&str>> = matches.get_many::<String>("EXE_ARGS").map(|v| v.map(|f| f.as_str()).collect());
+    let wait = get_op_wait(&matches);
 
     info!("Command: Apply");
     info!("    Restart: {:?}", restart);
-    info!("    Wait: {:?}", wait_for_parent);
-    info!("    Wait PID: {:?}", wait_pid);
+    info!("    Wait: {:?}", wait);
     info!("    Package: {:?}", package);
     info!("    Exe Args: {:?}", exe_args);
 
     let (root_path, app) = shared::detect_current_manifest()?;
     #[cfg(target_os = "windows")]
     let _mutex = shared::retry_io(|| windows::create_global_mutex(&app))?;
-    commands::apply(&root_path, &app, restart, wait_for_parent, wait_pid, package, exe_args, true)
+    commands::apply(&root_path, &app, restart, wait, package, exe_args, true)
 }
 
 #[cfg(target_os = "windows")]
 fn start(matches: &ArgMatches) -> Result<()> {
     let legacy_args = matches.get_one::<String>("args");
-    let wait_for_parent = matches.get_flag("wait");
-    let wait_pid = matches.get_one::<u32>("waitPid").map(|v| v.to_owned());
     let exe_name = matches.get_one::<String>("EXE_NAME");
     let exe_args: Option<Vec<&str>> = matches.get_many::<String>("EXE_ARGS").map(|v| v.map(|f| f.as_str()).collect());
+    let wait = get_op_wait(&matches);
 
     info!("Command: Start");
-    info!("    Wait: {:?}", wait_for_parent);
-    info!("    Wait PID: {:?}", wait_pid);
+    info!("    Wait: {:?}", wait);
     info!("    Exe Name: {:?}", exe_name);
     info!("    Exe Args: {:?}", exe_args);
     if legacy_args.is_some() {
@@ -174,7 +215,7 @@ fn start(matches: &ArgMatches) -> Result<()> {
 
     let (_root_path, app) = shared::detect_current_manifest()?;
     let _mutex = shared::retry_io(|| windows::create_global_mutex(&app))?;
-    commands::start(wait_for_parent, wait_pid, exe_name, exe_args, legacy_args)
+    commands::start(wait, exe_name, exe_args, legacy_args)
 }
 
 #[cfg(target_os = "windows")]
@@ -184,26 +225,12 @@ fn uninstall(_matches: &ArgMatches) -> Result<()> {
     commands::uninstall(&root_path, &app, true)
 }
 
-pub fn default_logging(verbose: bool, nocolor: bool, console: bool) -> Result<()> {
-    #[cfg(windows)]
-    let default_log_file = {
-        let mut my_dir = env::current_exe().unwrap();
-        my_dir.pop();
-        my_dir.join("Velopack.log")
-    };
-
-    #[cfg(unix)]
-    let default_log_file = std::path::Path::new("/tmp/velopack.log").to_path_buf();
-
-    logging::setup_logging(Some(&default_log_file), console, verbose, nocolor)
-}
-
 #[cfg(target_os = "windows")]
 #[test]
 fn test_start_command_supports_legacy_commands() {
     fn get_start_args(matches: &ArgMatches) -> (bool, Option<&String>, Option<&String>, Option<Vec<&String>>) {
         let legacy_args = matches.get_one::<String>("args");
-        let wait_for_parent = matches.get_flag("wait");
+        let wait_for_parent = get_flag_or_false(&matches, "wait");
         let exe_name = matches.get_one::<String>("EXE_NAME");
         let exe_args: Option<Vec<&String>> = matches.get_many::<String>("EXE_ARGS").map(|v| v.collect());
         return (wait_for_parent, exe_name, legacy_args, exe_args);
@@ -212,13 +239,33 @@ fn test_start_command_supports_legacy_commands() {
     fn try_parse_command_line_matches(input_args: Vec<String>) -> Result<ArgMatches> {
         // Split the arguments manually to handle the legacy `--flag=value` syntax
         // Also, replace `--processStartAndWait` with `--processStart --wait`
-        let args: Vec<String> = input_args
-            .into_iter()
-            .flat_map(|arg| if arg.contains('=') { arg.splitn(2, '=').map(String::from).collect::<Vec<_>>() } else { vec![arg] })
-            .flat_map(
-                |arg| if arg.eq_ignore_ascii_case("--processStartAndWait") { vec!["--processStart".to_string(), "--wait".to_string()] } else { vec![arg] },
-            )
-            .collect();
+        let mut args = Vec::new();
+        let mut preserve = false;
+        for arg in input_args {
+            if preserve {
+                args.push(arg);
+            } else if arg == "--" {
+                args.push("--".to_string());
+                preserve = true;
+            } else if arg.eq_ignore_ascii_case("--processStartAndWait") {
+                args.push("--processStart".to_string());
+                args.push("--wait".to_string());
+            } else if arg.starts_with("--processStartAndWait=") {
+                let mut split_arg = arg.splitn(2, '=');
+                split_arg.next(); // Skip the `--processStartAndWait` part
+                args.push("--processStart".to_string());
+                args.push("--wait".to_string());
+                if let Some(rest) = split_arg.next() {
+                    args.push(rest.to_string());
+                }
+            } else if arg.contains('=') {
+                let mut split_arg = arg.splitn(2, '=');
+                args.push(split_arg.next().unwrap().to_string());
+                args.push(split_arg.next().unwrap().to_string());
+            } else {
+                args.push(arg);
+            }
+        }
         root_command().try_get_matches_from(&args).map_err(|e| anyhow!("{}", e))
     }
 
@@ -245,6 +292,14 @@ fn test_start_command_supports_legacy_commands() {
     assert_eq!(exe_name, Some(&"hello.exe".to_string()));
     assert_eq!(legacy_args, None);
     assert_eq!(exe_args, None);
+
+    let command = vec!["Update.exe", "--processStartAndWait=hello.exe", "--", "Foo=Bar"];
+    let matches = try_parse_command_line_matches(command.iter().map(|s| s.to_string()).collect()).unwrap();
+    let (wait_for_parent, exe_name, legacy_args, exe_args) = get_start_args(matches.subcommand_matches("start").unwrap());
+    assert_eq!(wait_for_parent, true);
+    assert_eq!(exe_name, Some(&"hello.exe".to_string()));
+    assert_eq!(legacy_args, None);
+    assert_eq!(exe_args, Some(vec![&"Foo=Bar".to_string()]));
 
     let command = vec!["Update.exe", "--processStartAndWait", "hello.exe", "-a", "myarg"];
     let matches = try_parse_command_line_matches(command.iter().map(|s| s.to_string()).collect()).unwrap();

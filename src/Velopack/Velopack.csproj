@@ -2,32 +2,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net462;net48;netstandard2.0;net6.0;net8.0</TargetFrameworks>
+    <TargetFrameworks>net462;net48;net6.0;net8.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
-    <CheckEolTargetFramework>false</CheckEolTargetFramework>
     <LangVersion>9</LangVersion>
+    <VelopackPackageId>Velopack</VelopackPackageId>
   </PropertyGroup>
 
   <PropertyGroup>
-    <Title>Velopack</Title>
-    <Description>Velopack</Description>
-    <PackageId>Velopack</PackageId>
-    <PackageIcon>Velopack_200.png</PackageIcon>
-    <PackageReadmeFile>README_NUGET.md</PackageReadmeFile>
-    <Description>Quick and easy installer and automatic updates for cross-platform desktop applications</Description>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <RepositoryUrl>https://github.com/velopack/velopack</RepositoryUrl>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net7.0'))">true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>
-    <None Include="..\..\artwork\Velopack_200.png" Pack="true" PackagePath="\" />
-    <None Include="..\..\README_NUGET.md" Pack="true" PackagePath="\" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="NuGet.Versioning" Version="6.9.1" />
+    <PackageReference Include="NuGet.Versioning" Version="6.10.0" />
   </ItemGroup>
 
   <ItemGroup Condition=" $(TargetFramework.StartsWith('net4')) ">
@@ -35,12 +24,6 @@
     <Reference Include="System.Net.Http" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
-    <PackageReference Include="Newtonsoft.Json" Version="[13.0.1,)" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[2.2.0,)" />
-  </ItemGroup>
-
-  <ItemGroup Condition=" $(TargetFramework) == 'netstandard2.0' ">
-    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="[13.0.1,)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[2.2.0,)" />
   </ItemGroup>

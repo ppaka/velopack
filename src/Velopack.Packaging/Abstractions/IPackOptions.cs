@@ -2,9 +2,11 @@
 
 public interface IPackOptions : INugetPackCommand, IPlatformOptions
 {
-    string Channel { get; }
-    DeltaMode DeltaMode { get; }
-    string EntryExecutableName { get; }
-    bool IncludePdb { get; }
-    string Icon { get; }
+    string Channel { get; set; }
+    DeltaMode DeltaMode { get; set; }
+    string EntryExecutableName { get; set; }
+    string Icon { get; set; }
+    string Exclude { get; set; }
+    bool NoPortable { get; set; }
+    bool NoInst { get; set; }
 }

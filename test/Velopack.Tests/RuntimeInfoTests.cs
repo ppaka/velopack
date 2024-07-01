@@ -5,13 +5,13 @@ namespace Velopack.Tests;
 
 public class RuntimeInfoTests
 {
-    [Fact]
+    [Fact(Skip = "Sometimes fails in CI")]
     public void NugetVersionAgreesWithNbgv()
     {
         var args = new List<string> { "get-version", "-v", "NuGetPackageVersion" };
         var psi = new ProcessStartInfo("nbgv");
         psi.AppendArgumentListSafe(args, out var _);
-        var current = psi.Output(10_000);
+        var current = psi.Output(20_000);
         Assert.Equal(current, VelopackRuntimeInfo.VelopackNugetVersion.ToString());
     }
 

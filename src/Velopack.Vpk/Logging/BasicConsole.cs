@@ -5,12 +5,17 @@ namespace Velopack.Vpk.Logging;
 public class BasicConsole : IFancyConsole
 {
     private readonly ILogger logger;
-    private readonly DefaultPromptValueFactory defaultFactory;
+    private readonly VelopackDefaults defaultFactory;
 
-    public BasicConsole(ILogger logger, DefaultPromptValueFactory defaultFactory)
+    public BasicConsole(ILogger logger, VelopackDefaults defaultFactory)
     {
         this.logger = logger;
         this.defaultFactory = defaultFactory;
+    }
+
+    public string EscapeMarkup(string text)
+    {
+        return text;
     }
 
     public async Task ExecuteProgressAsync(Func<IFancyConsoleProgress, Task> action)

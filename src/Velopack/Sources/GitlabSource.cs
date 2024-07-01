@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -25,7 +24,7 @@ namespace Velopack.Sources
         public bool UpcomingRelease { get; set; }
 
         /// <summary>
-        /// The date which this release was published publically.
+        /// The date which this release was published publicly.
         /// </summary>
         [JsonPropertyName("released_at")]
         public DateTime? ReleasedAt { get; set; }
@@ -153,7 +152,7 @@ namespace Velopack.Sources
             var baseUri = new Uri("https://gitlab.com");
             var getReleasesUri = new Uri(baseUri, releasesPath);
             var response = await Downloader.DownloadString(getReleasesUri.ToString(), Authorization).ConfigureAwait(false);
-            var releases = SimpleJson.DeserializeObject<List<GitlabRelease>>(response);
+            var releases = CompiledJson.DeserializeGitlabReleaseList(response);
             if (releases == null) return new GitlabRelease[0];
             return releases.OrderByDescending(d => d.ReleasedAt).Where(x => includePrereleases || !x.UpcomingRelease).ToArray();
         }

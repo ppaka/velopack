@@ -48,9 +48,6 @@ namespace Velopack
             if (silent) args.Add("--silent");
             args.Add("apply");
 
-            args.Add("--waitPid");
-            args.Add(Process.GetCurrentProcess().Id.ToString());
-
             var entry = toApply ?? locator.GetLatestLocalFullPackage();
             if (entry != null && locator.PackagesDir != null) {
                 var pkg = Path.Combine(locator.PackagesDir, entry.FileName);
@@ -60,7 +57,11 @@ namespace Velopack
                 }
             }
 
-            if (restart) args.Add("--restart");
+            args.Add("--waitPid");
+            args.Add(Process.GetCurrentProcess().Id.ToString());
+
+            if (!restart) args.Add("--norestart"); // restarting is now the default Update.exe behavior
+
             if (restart && restartArgs != null && restartArgs.Length > 0) {
                 args.Add("--");
                 foreach (var a in restartArgs) {
@@ -73,12 +74,14 @@ namespace Velopack
 
             var p = Process.Start(psi);
 
-            if (p is not null) {
-                try {
-                    // this is an attempt to work around a bug where the restarted app fails to come to foreground.
-                    AllowSetForegroundWindow(p.Id);
-                } catch (Exception ex) {
-                    logger.LogWarning(ex, "Failed to allow Update.exe to set foreground window.");
+            if (VelopackRuntimeInfo.IsWindows) {
+                if (p is not null) {
+                    try {
+                        // this is an attempt to work around a bug where the restarted app fails to come to foreground.
+                        AllowSetForegroundWindow(p.Id);
+                    } catch (Exception ex) {
+                        logger.LogWarning(ex, "Failed to allow Update.exe to set foreground window.");
+                    }
                 }
             }
 

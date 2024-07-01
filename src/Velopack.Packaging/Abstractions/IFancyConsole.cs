@@ -1,6 +1,6 @@
 ﻿namespace Velopack.Packaging.Abstractions;
 
-public interface IFancyConsole
+public interface IFancyConsole : IConsole
 {
     Task ExecuteProgressAsync(Func<IFancyConsoleProgress, Task> action);
 
@@ -8,5 +8,5 @@ public interface IFancyConsole
 
     Task<bool> PromptYesNo(string prompt, bool? defaultValue = null, TimeSpan? timeout = null);
 
-    void WriteLine(string text = "");
+    string EscapeMarkup(string text);
 }

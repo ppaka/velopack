@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
 using Velopack.Packaging;
 using Velopack.Packaging.Abstractions;
 using Velopack.Sources;
@@ -7,7 +8,14 @@ namespace Velopack.Deployment;
 
 public class RepositoryOptions : IOutputOptions
 {
-    public string Channel { get; set; } = ReleaseEntryHelper.GetDefaultChannel();
+    private string _channel;
+
+    public RuntimeOs TargetOs { get; set; }
+
+    public string Channel {
+        get => _channel ?? ReleaseEntryHelper.GetDefaultChannel(TargetOs);
+        set => _channel = value;
+    }
 
     public DirectoryInfo ReleaseDir { get; set; }
 }
@@ -60,7 +68,7 @@ public abstract class DownRepository<TDown> : IRepositoryCanDownload<TDown>
         VelopackAssetFeed feed = await RetryAsyncRet(() => GetReleasesAsync(options), $"Fetching releases for channel {options.Channel}...");
         var releases = feed.Assets;
 
-        Log.Info($"Found {releases.Length} release in remote file");
+        Log.Info($"Found {releases.Length} release(s) in remote file");
 
         var latest = releases.Where(r => r.Type == VelopackAssetType.Full).OrderByDescending(r => r.Version).FirstOrDefault();
         if (latest == null) {
@@ -73,8 +81,12 @@ public abstract class DownRepository<TDown> : IRepositoryCanDownload<TDown>
 
         if (File.Exists(path)) {
             Log.Warn($"File '{path}' already exists on disk. Verifying checksum...");
-            var hash = Utility.CalculateFileSHA1(path);
-            if (hash == latest.SHA1) {
+
+            bool hashMatch = (latest.SHA256 != null)
+                ? latest.SHA256 == Utility.CalculateFileSHA256(path)
+                : latest.SHA1 == Utility.CalculateFileSHA1(path);
+
+            if (hashMatch) {
                 Log.Info("Checksum matches. Finished.");
                 return;
             } else {
@@ -85,8 +97,14 @@ public abstract class DownRepository<TDown> : IRepositoryCanDownload<TDown>
         await RetryAsync(() => SaveEntryToFileAsync(options, latest, incomplete), $"Downloading {latest.FileName}...");
 
         Log.Info("Verifying checksum...");
-        var newHash = Utility.CalculateFileSHA1(incomplete);
-        if (newHash != latest.SHA1) {
+        string newHash;
+        if (!string.IsNullOrEmpty(latest.SHA256)) {
+            if (latest.SHA256 != (newHash = Utility.CalculateFileSHA256(incomplete))) {
+                Log.Error($"Checksum mismatch, expected {latest.SHA256}, got {newHash}");
+                return;
+            }
+        }
+        else if (latest.SHA1 != (newHash = Utility.CalculateFileSHA1(incomplete))) {
             Log.Error($"Checksum mismatch, expected {latest.SHA1}, got {newHash}");
             return;
         }

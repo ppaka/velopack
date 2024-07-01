@@ -25,6 +25,8 @@ public class GitHubUploadOptions : GitHubDownloadOptions
 
     public string TagName { get; set; }
 
+    public string TargetCommitish { get; set; }
+
     public bool Merge { get; set; }
 }
 
@@ -54,7 +56,7 @@ public class GitHubRepository : SourceRepository<GitHubDownloadOptions, GithubSo
     public async Task UploadMissingAssetsAsync(GitHubUploadOptions options)
     {
         var (repoOwner, repoName) = GetOwnerAndRepo(options.RepoUrl);
-        var helper = new ReleaseEntryHelper(options.ReleaseDir.FullName, options.Channel, Log);
+        var helper = new ReleaseEntryHelper(options.ReleaseDir.FullName, options.Channel, Log, options.TargetOs);
         var build = BuildAssets.Read(options.ReleaseDir.FullName, options.Channel);
         var latest = helper.GetLatestFullRelease();
         var latestPath = Path.Combine(options.ReleaseDir.FullName, latest.FileName);
@@ -62,7 +64,7 @@ public class GitHubRepository : SourceRepository<GitHubDownloadOptions, GithubSo
         var semVer = options.TagName ?? latest.Version.ToString();
         var releaseName = string.IsNullOrWhiteSpace(options.ReleaseName) ? semVer.ToString() : options.ReleaseName;
 
-        Log.Info($"Preparing to upload {build.Files.Count} assets to GitHub");
+        Log.Info($"Preparing to upload {build.Files.Count} asset(s) to GitHub");
 
         var client = new GitHubClient(new ProductHeaderValue("Velopack")) {
             Credentials = new Credentials(options.Token)
@@ -92,6 +94,7 @@ public class GitHubRepository : SourceRepository<GitHubDownloadOptions, GithubSo
                 Draft = true,
                 Prerelease = options.Prerelease,
                 Name = string.IsNullOrWhiteSpace(options.ReleaseName) ? semVer.ToString() : options.ReleaseName,
+                TargetCommitish = options.TargetCommitish,
             };
             Log.Info($"Creating draft release titled '{newReleaseReq.Name}'");
             release = await client.Repository.Release.Create(repoOwner, repoName, newReleaseReq);
@@ -112,7 +115,6 @@ public class GitHubRepository : SourceRepository<GitHubDownloadOptions, GithubSo
         var feed = new VelopackAssetFeed {
             Assets = build.GetReleaseEntries().ToArray(),
         };
-        var entries = build.GetReleaseEntries();
         var json = ReleaseEntryHelper.GetAssetFeedJson(feed);
 
         await RetryAsync(async () => {
@@ -121,12 +123,10 @@ public class GitHubRepository : SourceRepository<GitHubDownloadOptions, GithubSo
         }, "Uploading " + releasesFileName);
 
         if (options.Channel == ReleaseEntryHelper.GetDefaultChannel(RuntimeOs.Windows)) {
-            var ms = new MemoryStream();
-#pragma warning disable CS0618 // Type or member is obsolete
-            ReleaseEntry.WriteReleaseFile(entries.Select(ReleaseEntry.FromVelopackAsset), ms);
-#pragma warning restore CS0618 // Type or member is obsolete
+            var legacyReleasesContent = ReleaseEntryHelper.GetLegacyMigrationReleaseFeedString(feed);
+            var legacyReleasesBytes = Encoding.UTF8.GetBytes(legacyReleasesContent);
             await RetryAsync(async () => {
-                var data = new ReleaseAssetUpload("RELEASES", "application/octet-stream", new MemoryStream(ms.ToArray()), TimeSpan.FromMinutes(1));
+                var data = new ReleaseAssetUpload("RELEASES", "application/octet-stream", new MemoryStream(legacyReleasesBytes), TimeSpan.FromMinutes(1));
                 await client.Repository.Release.UploadAsset(release, data, CancellationToken.None);
             }, "Uploading legacy RELEASES (compatibility)");
         }

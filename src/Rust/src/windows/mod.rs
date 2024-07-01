@@ -1,8 +1,8 @@
+pub mod locksmith;
+pub mod mitigate;
 pub mod prerequisite;
 pub mod runtimes;
 pub mod splash;
-pub mod os_info;
-pub mod locksmith;
 
 mod self_delete;
 mod shortcuts;

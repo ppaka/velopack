@@ -41,7 +41,7 @@ namespace Velopack.Sources
         /// <inheritdoc />
         public GitBase(string repoUrl, string? accessToken, bool prerelease, IFileDownloader? downloader = null)
         {
-            RepoUri = new Uri(repoUrl);
+            RepoUri = new Uri(repoUrl.TrimEnd('/'));
             AccessToken = accessToken;
             Prerelease = prerelease;
             Downloader = downloader ?? Utility.CreateDefaultDownloader();
@@ -64,7 +64,7 @@ namespace Velopack.Sources
         public virtual async Task<VelopackAssetFeed> GetReleaseFeed(ILogger logger, string channel, Guid? stagingId = null, VelopackAsset? latestLocalRelease = null)
         {
             var releases = await GetReleases(Prerelease).ConfigureAwait(false);
-            if (releases == null || releases.Count() == 0) {
+            if (releases == null || releases.Length == 0) {
                 logger.Warn($"No releases found at '{RepoUri}'.");
                 return new VelopackAssetFeed();
             }
@@ -125,6 +125,7 @@ namespace Velopack.Sources
                 Type = entry.Type;
                 FileName = entry.FileName;
                 SHA1 = entry.SHA1;
+                SHA256 = entry.SHA256;
                 Size = entry.Size;
                 NotesMarkdown = entry.NotesMarkdown;
                 NotesHTML = entry.NotesHTML;

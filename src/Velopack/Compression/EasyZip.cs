@@ -12,28 +12,75 @@ namespace Velopack.Compression
 {
     internal static class EasyZip
     {
-        public static void ExtractZipToDirectory(ILogger logger, string inputFile, string outputDirectory)
+        private const string SYMLINK_EXT = ".__symlink";
+
+        public static void ExtractZipToDirectory(ILogger logger, string inputFile, string outputDirectory, bool expandSymlinks = false)
         {
             logger.Debug($"Extracting '{inputFile}' to '{outputDirectory}' using System.IO.Compression...");
             Utility.DeleteFileOrDirectoryHard(outputDirectory);
-            ZipFile.ExtractToDirectory(inputFile, outputDirectory);
-        }
 
-        public static void CreateZipFromDirectory(ILogger logger, string outputFile, string directoryToCompress, Action<int>? progress = null,
-            CompressionLevel compressionLevel = CompressionLevel.Optimal)
-        {
-            progress ??= (x => { });
-            logger.Debug($"Compressing '{directoryToCompress}' to '{outputFile}' using System.IO.Compression...");
+            List<ZipArchiveEntry> symlinks = new();
+            using (ZipArchive archive = ZipFile.Open(inputFile, ZipArchiveMode.Read)) {
+                foreach (ZipArchiveEntry entry in archive.Entries) {
+                    if (entry.FullName.EndsWith(SYMLINK_EXT)) {
+                        symlinks.Add(entry);
+                    } else {
+                        entry.ExtractRelativeToDirectory(outputDirectory, true, expandSymlinks);
+                    }
+                }
 
-            // we have stopped using ZipFile so we can add async and determinism.
-            // ZipFile.CreateFromDirectory(directoryToCompress, outputFile);
-            try {
-                DeterministicCreateFromDirectory(directoryToCompress, outputFile, compressionLevel, false, Encoding.UTF8, progress);
-            } catch {
-                try { File.Delete(outputFile); } catch { }
-                throw;
+                // process symlinks after, because creating them requires the target to exist
+                foreach (var sym in symlinks) {
+                    sym.ExtractRelativeToDirectory(outputDirectory, true, expandSymlinks);
+                }
             }
         }
+
+        private static void ExtractRelativeToDirectory(this ZipArchiveEntry source, string destinationDirectoryName, bool overwrite, bool expandSymlinks)
+        {
+            // Note that this will give us a good DirectoryInfo even if destinationDirectoryName exists:
+            DirectoryInfo di = Directory.CreateDirectory(destinationDirectoryName);
+            string destinationDirectoryFullPath = di.FullName;
+            var sep = Path.DirectorySeparatorChar.ToString();
+            if (!destinationDirectoryFullPath.EndsWith(sep)) {
+                destinationDirectoryFullPath = string.Concat(destinationDirectoryFullPath, sep);
+            }
+
+            string fileDestinationPath = Path.GetFullPath(Path.Combine(destinationDirectoryFullPath, SanitizeEntryFilePath(source.FullName)));
+
+            if (!fileDestinationPath.StartsWith(destinationDirectoryFullPath, VelopackRuntimeInfo.PathStringComparison))
+                throw new IOException("IO_ExtractingResultsInOutside");
+
+            if (expandSymlinks && source.FullName.EndsWith(SYMLINK_EXT)) {
+                // Handle symlink extraction
+                fileDestinationPath = fileDestinationPath.Replace(SYMLINK_EXT, string.Empty);
+                Directory.CreateDirectory(Path.GetDirectoryName(fileDestinationPath)!);
+                using (var reader = new StreamReader(source.Open())) {
+                    var targetPath = reader.ReadToEnd();
+                    var absolute = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(fileDestinationPath)!, targetPath));
+                    if (!Utility.IsFileInDirectory(absolute, destinationDirectoryName)) {
+                        throw new IOException("IO_SymlinkTargetNotInDirectory");
+                    }
+                    SymbolicLink.Create(fileDestinationPath, absolute, true, true);
+                }
+                return;
+            }
+
+            if (Path.GetFileName(fileDestinationPath).Length == 0) {
+                // If it is a directory:
+                if (source.Length != 0)
+                    throw new IOException("IO_DirectoryNameWithData");
+
+                Directory.CreateDirectory(fileDestinationPath);
+            } else {
+                // If it is a file:
+                // Create containing directory:
+                Directory.CreateDirectory(Path.GetDirectoryName(fileDestinationPath)!);
+                source.ExtractToFile(fileDestinationPath, overwrite: overwrite);
+            }
+        }
+
+        internal static string SanitizeEntryFilePath(string entryPath) => entryPath.Replace('\0', '_');
 
         public static async Task CreateZipFromDirectoryAsync(ILogger logger, string outputFile, string directoryToCompress, Action<int>? progress = null,
             CompressionLevel compressionLevel = CompressionLevel.Optimal, CancellationToken cancelToken = default)
@@ -44,7 +91,7 @@ namespace Velopack.Compression
             // we have stopped using ZipFile so we can add async and determinism.
             // ZipFile.CreateFromDirectory(directoryToCompress, outputFile);
             try {
-                await DeterministicCreateFromDirectoryAsync(directoryToCompress, outputFile, compressionLevel, false, Encoding.UTF8, progress, cancelToken).ConfigureAwait(false);
+                await DeterministicCreateFromDirectoryAsync(directoryToCompress, outputFile, compressionLevel, progress, cancelToken).ConfigureAwait(false);
             } catch {
                 try { File.Delete(outputFile); } catch { }
                 throw;
@@ -52,103 +99,96 @@ namespace Velopack.Compression
         }
 
         private static char s_pathSeperator = '/';
-        private static readonly DateTime ZipFormatMinDate = new DateTime(1980, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-
-        private static void DeterministicCreateFromDirectory(string sourceDirectoryName, string destinationArchiveFileName, CompressionLevel compressionLevel,
-            bool includeBaseDirectory, Encoding entryNameEncoding, Action<int> progress)
-        {
-            sourceDirectoryName = Path.GetFullPath(sourceDirectoryName);
-            destinationArchiveFileName = Path.GetFullPath(destinationArchiveFileName);
-            using ZipArchive zipArchive = ZipFile.Open(destinationArchiveFileName, ZipArchiveMode.Create, entryNameEncoding);
-            bool flag = true;
-            DirectoryInfo directoryInfo = new DirectoryInfo(sourceDirectoryName);
-            string fullName = directoryInfo.FullName;
-            if (includeBaseDirectory && directoryInfo.Parent != null) {
-                fullName = directoryInfo.Parent.FullName;
-            }
-
-            var files = directoryInfo
-                .EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
-                .OrderBy(f => f.FullName)
-                .ToArray();
-
-            for (var i = 0; i < files.Length; i++) {
-                var item = files[i];
-                flag = false;
-                int length = item.FullName.Length - fullName.Length;
-                string text = EntryFromPath(item.FullName, fullName.Length, length);
-
-                if (item is FileInfo) {
-                    var sourceFileName = item.FullName;
-                    var entryName = text;
-                    using Stream stream = File.Open(sourceFileName, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    ZipArchiveEntry zipArchiveEntry = zipArchive.CreateEntry(entryName, compressionLevel);
-                    zipArchiveEntry.LastWriteTime = ZipFormatMinDate;
-                    using (Stream destination2 = zipArchiveEntry.Open()) {
-                        stream.CopyTo(destination2);
-                    }
-                } else if (item is DirectoryInfo possiblyEmptyDir && IsDirEmpty(possiblyEmptyDir)) {
-                    var entry = zipArchive.CreateEntry(text + s_pathSeperator);
-                    entry.LastWriteTime = ZipFormatMinDate;
-                }
-
-                progress((int) ((double) i / files.Length * 100));
-            }
-
-            if (includeBaseDirectory && flag) {
-                string text = EntryFromPath(directoryInfo.Name, 0, directoryInfo.Name.Length);
-                var entry = zipArchive.CreateEntry(text + s_pathSeperator);
-                entry.LastWriteTime = ZipFormatMinDate;
-            }
-        }
+        public static readonly DateTime ZipFormatMinDate = new DateTime(1980, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         private static async Task DeterministicCreateFromDirectoryAsync(string sourceDirectoryName, string destinationArchiveFileName, CompressionLevel compressionLevel,
-            bool includeBaseDirectory, Encoding entryNameEncoding, Action<int> progress, CancellationToken cancelToken)
+            Action<int> progress, CancellationToken cancelToken)
         {
+            Encoding entryNameEncoding = Encoding.UTF8;
             sourceDirectoryName = Path.GetFullPath(sourceDirectoryName);
             destinationArchiveFileName = Path.GetFullPath(destinationArchiveFileName);
             using ZipArchive zipArchive = ZipFile.Open(destinationArchiveFileName, ZipArchiveMode.Create, entryNameEncoding);
-            bool flag = true;
             DirectoryInfo directoryInfo = new DirectoryInfo(sourceDirectoryName);
             string fullName = directoryInfo.FullName;
-            if (includeBaseDirectory && directoryInfo.Parent != null) {
-                fullName = directoryInfo.Parent.FullName;
-            }
 
-            var files = directoryInfo
-                .EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
+            long totalBytes = directoryInfo.EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length);
+            long processedBytes = 0L;
+
+            var directories = directoryInfo
+                .EnumerateDirectories("*", SearchOption.AllDirectories)
+                .Concat(new[] { directoryInfo })
                 .OrderBy(f => f.FullName)
                 .ToArray();
 
-            for (var i = 0; i < files.Length; i++) {
+            foreach (var dir in directories) {
                 cancelToken.ThrowIfCancellationRequested();
-                var item = files[i];
-                flag = false;
-                int length = item.FullName.Length - fullName.Length;
-                string text = EntryFromPath(item.FullName, fullName.Length, length);
 
-                if (item is FileInfo) {
-                    var sourceFileName = item.FullName;
-                    var entryName = text;
+                // if dir is a symlink, write it as a file containing path to target
+                if (SymbolicLink.Exists(dir.FullName)) {
+                    if (!Utility.IsFileInDirectory(SymbolicLink.GetTarget(dir.FullName, relative: false), sourceDirectoryName)) {
+                        throw new IOException("IO_SymlinkTargetNotInDirectory");
+                    }
+                    string entryName = EntryFromPath(dir.FullName, fullName.Length, dir.FullName.Length - fullName.Length);
+                    string symlinkTarget = SymbolicLink.GetTarget(dir.FullName, relative: true)
+                        .Replace(Path.DirectorySeparatorChar, s_pathSeperator) + s_pathSeperator;
+                    var entry = zipArchive.CreateEntry(entryName + SYMLINK_EXT);
+                    using (var writer = new StreamWriter(entry.Open())) {
+                        await writer.WriteAsync(symlinkTarget).ConfigureAwait(false);
+                    }
+                    continue;
+                }
+
+                // if directory is empty, write it as an empty entry ending in s_pathSeperator
+                if (IsDirEmpty(dir)) {
+                    string entryName = EntryFromPath(dir.FullName, fullName.Length, dir.FullName.Length - fullName.Length);
+                    var entry = zipArchive.CreateEntry(entryName + s_pathSeperator);
+                    entry.LastWriteTime = ZipFormatMinDate;
+                    continue;
+                }
+
+                // if none of the above, enumerate files and add them to the archive
+                var files = dir
+                    .EnumerateFiles("*", SearchOption.TopDirectoryOnly)
+                    .OrderBy(f => f.FullName)
+                    .ToArray();
+
+                for (var i = 0; i < files.Length; i++) {
+                    cancelToken.ThrowIfCancellationRequested();
+                    var fileInfo = files[i];
+                    int length = fileInfo.FullName.Length - fullName.Length;
+                    string entryName = EntryFromPath(fileInfo.FullName, fullName.Length, length);
+
+                    if (SymbolicLink.Exists(fileInfo.FullName)) {
+                        // Handle symlink: Store the symlink target instead of its content
+                        if (!Utility.IsFileInDirectory(SymbolicLink.GetTarget(fileInfo.FullName, relative: false), sourceDirectoryName)) {
+                            throw new IOException("IO_SymlinkTargetNotInDirectory");
+                        }
+                        string symlinkTarget = SymbolicLink.GetTarget(fileInfo.FullName, relative: true)
+                            .Replace(Path.DirectorySeparatorChar, s_pathSeperator);
+                        var entry = zipArchive.CreateEntry(entryName + SYMLINK_EXT);
+                        using (var writer = new StreamWriter(entry.Open())) {
+                            await writer.WriteAsync(symlinkTarget).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
+
+                    // Regular file handling
+                    var sourceFileName = fileInfo.FullName;
                     using Stream stream = File.Open(sourceFileName, FileMode.Open, FileAccess.Read, FileShare.Read);
                     ZipArchiveEntry zipArchiveEntry = zipArchive.CreateEntry(entryName, compressionLevel);
                     zipArchiveEntry.LastWriteTime = ZipFormatMinDate;
-                    using (Stream destination2 = zipArchiveEntry.Open()) {
-                        await stream.CopyToAsync(destination2, 81920, cancelToken).ConfigureAwait(false);
+
+                    byte[] buffer = new byte[81920];
+                    int bytesRead;
+                    using (Stream destination = zipArchiveEntry.Open()) {
+                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancelToken).ConfigureAwait(false)) > 0) {
+                            cancelToken.ThrowIfCancellationRequested();
+                            await destination.WriteAsync(buffer, 0, bytesRead, cancelToken).ConfigureAwait(false);
+                            processedBytes += bytesRead;
+                            progress((int) ((double) ++processedBytes / totalBytes * 100));
+                        }
                     }
-                } else if (item is DirectoryInfo possiblyEmptyDir && IsDirEmpty(possiblyEmptyDir)) {
-                    var entry = zipArchive.CreateEntry(text + s_pathSeperator);
-                    entry.LastWriteTime = ZipFormatMinDate;
                 }
-
-                progress((int) ((double) i / files.Length * 100));
-            }
-
-            cancelToken.ThrowIfCancellationRequested();
-            if (includeBaseDirectory && flag) {
-                string text = EntryFromPath(directoryInfo.Name, 0, directoryInfo.Name.Length);
-                var entry = zipArchive.CreateEntry(text + s_pathSeperator);
-                entry.LastWriteTime = ZipFormatMinDate;
             }
         }
 

@@ -1,7 +1,7 @@
 ﻿using System.Runtime.Versioning;
 using System.Security;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
+using Velopack.Json;
 
 namespace Velopack.Packaging.Unix;
 
@@ -15,7 +15,7 @@ public class OsxBuildTools
         Log = logger;
     }
 
-    public void CodeSign(string identity, string entitlements, string filePath)
+    public void CodeSign(string identity, string entitlements, string filePath, string keychainPath)
     {
         if (String.IsNullOrEmpty(entitlements)) {
             Log.Info("No entitlements specified, using default: " +
@@ -35,13 +35,18 @@ public class OsxBuildTools
             "--timestamp",
             "--options", "runtime",
             "--entitlements", entitlements,
-            filePath
         };
 
+        if (!String.IsNullOrEmpty(keychainPath)) {
+            Log.Info($"Using non-default keychain at '{keychainPath}'");
+            args.Add("--keychain");
+            args.Add(keychainPath);
+        }
+
+        args.Add(filePath);
+
         Log.Info($"Beginning codesign for package...");
-
         Log.Info(Exe.InvokeAndThrowIfNonZero("codesign", args, null));
-
         Log.Info("codesign completed successfully");
     }
 
@@ -76,7 +81,7 @@ public class OsxBuildTools
             throw new ArgumentException("Source directory does not exist: " + source);
         }
         Log.Debug($"Copying '{source}' to '{dest}' (preserving symlinks)");
-        
+
         // copy the contents of the folder, not the folder itself.
         var src = source.TrimEnd('/') + "/.";
         var des = dest.TrimEnd('/') + "/";
@@ -110,6 +115,7 @@ public class OsxBuildTools
         File.WriteAllText(postinstall, $"""
 #!/bin/sh
 rm -rf /tmp/velopack/{appId}
+sudo -u "$USER" rm -rf ~/Library/Caches/velopack/{appId}
 sudo -u "$USER" open "$2/{bundleName}/"
 exit 0
 """);
@@ -178,7 +184,7 @@ exit 0
         Log.Info("Installer created successfully");
     }
 
-    public void Notarize(string filePath, string keychainProfileName)
+    public void Notarize(string filePath, string keychainProfileName, string keychainPath)
     {
         Log.Info($"Preparing to Notarize. This will upload to Apple and usually takes minutes, [underline]but could take hours.[/]");
 
@@ -186,17 +192,24 @@ exit 0
             "notarytool",
             "submit",
             "-f", "json",
-            "--keychain-profile", keychainProfileName,
             "--wait",
-            filePath
+            "--keychain-profile", keychainProfileName,
         };
+
+        if (!String.IsNullOrEmpty(keychainPath)) {
+            Log.Info($"Using non-default keychain at '{keychainPath}'");
+            args.Add("--keychain");
+            args.Add(keychainPath);
+        }
+
+        args.Add(filePath);
 
         var ntresultjson = Exe.InvokeProcess("xcrun", args, null);
         Log.Info(ntresultjson.StdOutput);
 
         // try to catch any notarization errors. if we have a submission id, retrieve notary logs.
         try {
-            var ntresult = JsonConvert.DeserializeObject<NotaryToolResult>(ntresultjson.StdOutput);
+            var ntresult = SimpleJson.DeserializeObject<NotaryToolResult>(ntresultjson.StdOutput);
             if (ntresult?.status != "Accepted" || ntresultjson.ExitCode != 0) {
                 if (ntresult?.id != null) {
                     var logargs = new List<string> {
@@ -212,8 +225,8 @@ exit 0
 
                 throw new Exception("Notarization failed: " + ntresultjson.StdOutput);
             }
-        } catch (JsonReaderException) {
-            throw new Exception("Notarization failed: " + ntresultjson.StdOutput);
+        } catch (Exception ex) {
+            throw new Exception("Notarization failed: " + ntresultjson.StdOutput + Environment.NewLine + ex.Message);
         }
 
         Log.Info("Notarization completed successfully");

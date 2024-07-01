@@ -1,14 +1,11 @@
-﻿using System.Net;
-using System.Text;
-using Amazon;
+﻿using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
-using Velopack.Packaging;
 
 namespace Velopack.Deployment;
 
-public class S3DownloadOptions : RepositoryOptions
+public class S3DownloadOptions : RepositoryOptions, IObjectDownloadOptions
 {
     public string KeyId { get; set; }
 
@@ -23,114 +20,55 @@ public class S3DownloadOptions : RepositoryOptions
     public string Bucket { get; set; }
 }
 
-public class S3UploadOptions : S3DownloadOptions
+public class S3UploadOptions : S3DownloadOptions, IObjectUploadOptions
 {
     public int KeepMaxReleases { get; set; }
 }
 
-public class S3Repository : DownRepository<S3DownloadOptions>, IRepositoryCanUpload<S3UploadOptions>
+public class S3BucketClient
+{
+    public AmazonS3Client Amazon { get; }
+
+    public string Bucket { get; }
+
+    public S3BucketClient(AmazonS3Client client, string bucket)
+    {
+        Amazon = client;
+        Bucket = bucket;
+    }
+
+    public virtual Task<DeleteObjectResponse> DeleteObjectAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var request = new DeleteObjectRequest();
+        request.BucketName = Bucket;
+        request.Key = key;
+        return Amazon.DeleteObjectAsync(request, cancellationToken);
+    }
+
+    public virtual Task<GetObjectResponse> GetObjectAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var request = new GetObjectRequest();
+        request.BucketName = Bucket;
+        request.Key = key;
+        return Amazon.GetObjectAsync(request, cancellationToken);
+    }
+
+    public virtual Task<GetObjectMetadataResponse> GetObjectMetadataAsync(string key, CancellationToken cancellationToken = default)
+    {
+        var request = new GetObjectMetadataRequest();
+        request.BucketName = Bucket;
+        request.Key = key;
+        return Amazon.GetObjectMetadataAsync(request, cancellationToken);
+    }
+}
+
+public class S3Repository : ObjectRepository<S3DownloadOptions, S3UploadOptions, S3BucketClient>
 {
     public S3Repository(ILogger logger) : base(logger)
     {
     }
 
-    public async Task UploadMissingAssetsAsync(S3UploadOptions options)
-    {
-        var build = BuildAssets.Read(options.ReleaseDir.FullName, options.Channel);
-        var client = GetS3Client(options);
-
-        Log.Info($"Preparing to upload {build.Files.Count} local assets to S3 endpoint {options.Endpoint ?? ""}");
-
-        var remoteReleases = await GetReleasesAsync(options);
-        Log.Info($"There are {remoteReleases.Assets.Length} assets in remote RELEASES file.");
-
-        var localEntries = build.GetReleaseEntries();
-        var releaseEntries = ReleaseEntryHelper.MergeAssets(localEntries, remoteReleases.Assets).ToArray();
-
-        Log.Info($"{releaseEntries.Length} merged local/remote releases.");
-
-        VelopackAsset[] toDelete = new VelopackAsset[0];
-
-        if (options.KeepMaxReleases > 0) {
-            var fullReleases = releaseEntries
-                .OrderByDescending(x => x.Version)
-                .Where(x => x.Type == VelopackAssetType.Full)
-                .ToArray();
-            if (fullReleases.Length > options.KeepMaxReleases) {
-                var minVersion = fullReleases[options.KeepMaxReleases - 1].Version;
-                toDelete = releaseEntries
-                    .Where(x => x.Version < minVersion)
-                    .ToArray();
-                releaseEntries = releaseEntries.Except(toDelete).ToArray();
-                Log.Info($"Retention policy (keepMaxReleases={options.KeepMaxReleases}) will delete {toDelete.Length} releases.");
-            } else {
-                Log.Info($"Retention policy (keepMaxReleases={options.KeepMaxReleases}) will not be applied, because there will only be {fullReleases.Length} full releases when this upload has completed.");
-            }
-        }
-
-        foreach (var asset in build.Files) {
-            await UploadFile(client, options.Bucket, Path.GetFileName(asset), new FileInfo(asset), true);
-        }
-
-        using var _1 = Utility.GetTempFileName(out var tmpReleases);
-        File.WriteAllText(tmpReleases, ReleaseEntryHelper.GetAssetFeedJson(new VelopackAssetFeed { Assets = releaseEntries }));
-        var releasesName = Utility.GetVeloReleaseIndexName(options.Channel);
-        await UploadFile(client, options.Bucket, releasesName, new FileInfo(tmpReleases), true);
-
-#pragma warning disable CS0612 // Type or member is obsolete
-#pragma warning disable CS0618 // Type or member is obsolete
-        var legacyKey = Utility.GetReleasesFileName(options.Channel);
-        using var _2 = Utility.GetTempFileName(out var tmpReleases2);
-        using (var fs = File.Create(tmpReleases2)) {
-            ReleaseEntry.WriteReleaseFile(releaseEntries.Select(ReleaseEntry.FromVelopackAsset), fs);
-        }
-        await UploadFile(client, options.Bucket, legacyKey, new FileInfo(tmpReleases2), true);
-#pragma warning restore CS0618 // Type or member is obsolete
-#pragma warning restore CS0612 // Type or member is obsolete
-
-        if (toDelete.Length > 0) {
-            Log.Info($"Retention policy about to delete {toDelete.Length} releases...");
-            foreach (var del in toDelete) {
-                //var metadata = await client.GetObjectMetadataAsync(options.Bucket, del.FileName);
-                await RetryAsync(() => client.DeleteObjectAsync(options.Bucket, del.FileName), "Deleting " + del.FileName);
-            }
-        }
-
-        Log.Info("Done.");
-    }
-
-    protected override async Task<VelopackAssetFeed> GetReleasesAsync(S3DownloadOptions options)
-    {
-        var releasesName = Utility.GetVeloReleaseIndexName(options.Channel);
-        var client = GetS3Client(options);
-
-        var ms = new MemoryStream();
-
-        try {
-            await RetryAsync(async () => {
-                using (var obj = await client.GetObjectAsync(options.Bucket, releasesName))
-                using (var stream = obj.ResponseStream) {
-                    await stream.CopyToAsync(ms);
-                }
-            }, $"Fetching {releasesName}...");
-        } catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound) {
-            return new VelopackAssetFeed();
-        }
-
-        return VelopackAssetFeed.FromJson(Encoding.UTF8.GetString(ms.ToArray()));
-    }
-
-    protected override async Task SaveEntryToFileAsync(S3DownloadOptions options, VelopackAsset entry, string filePath)
-    {
-        var client = GetS3Client(options);
-        await RetryAsync(async () => {
-            using (var obj = await client.GetObjectAsync(options.Bucket, entry.FileName)) {
-                await obj.WriteResponseStreamToFileAsync(filePath, false, CancellationToken.None);
-            }
-        }, $"Downloading {entry.FileName}...");
-    }
-
-    private static AmazonS3Client GetS3Client(S3DownloadOptions options)
+    protected override S3BucketClient CreateClient(S3DownloadOptions options)
     {
         var config = new AmazonS3Config() { ServiceURL = options.Endpoint };
         if (options.Endpoint != null) {
@@ -141,21 +79,57 @@ public class S3Repository : DownRepository<S3DownloadOptions>, IRepositoryCanUpl
             throw new InvalidOperationException("Missing endpoint");
         }
 
+        AmazonS3Client client;
         if (options.Session != null) {
-            return new AmazonS3Client(options.KeyId, options.Secret, options.Session, config);
+            client = new AmazonS3Client(options.KeyId, options.Secret, options.Session, config);
+        } else if (options.KeyId != null || options.Secret != null) {
+            client = new AmazonS3Client(options.KeyId, options.Secret, config);
         } else {
-            return new AmazonS3Client(options.KeyId, options.Secret, config);
+            client = new AmazonS3Client(config);
         }
+        return new S3BucketClient(client, options.Bucket);
     }
 
-    private async Task UploadFile(AmazonS3Client client, string bucket, string key, FileInfo f, bool overwriteRemote)
+    protected override async Task DeleteObject(S3BucketClient client, string key)
+    {
+        await RetryAsync(() => client.DeleteObjectAsync(key), "Deleting " + key);
+    }
+
+    protected override async Task<byte[]> GetObjectBytes(S3BucketClient client, string key)
+    {
+        return await RetryAsyncRet(async () => {
+            try {
+                var ms = new MemoryStream();
+                using (var obj = await client.GetObjectAsync(key))
+                using (var stream = obj.ResponseStream) {
+                    await stream.CopyToAsync(ms);
+                }
+                return ms.ToArray();
+            } catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound) {
+                return null;
+            }
+        }, $"Downloading {key}...");
+    }
+
+    protected override async Task SaveEntryToFileAsync(S3DownloadOptions options, VelopackAsset entry, string filePath)
+    {
+        var client = CreateClient(options);
+        await RetryAsync(async () => {
+            using (var obj = await client.GetObjectAsync(entry.FileName)) {
+                await obj.WriteResponseStreamToFileAsync(filePath, false, CancellationToken.None);
+            }
+        }, $"Downloading {entry.FileName}...");
+    }
+
+    protected override async Task UploadObject(S3BucketClient client, string key, FileInfo f, bool overwriteRemote, bool noCache)
     {
         string deleteOldVersionId = null;
 
         // try to detect an existing remote file of the same name
         try {
-            var metadata = await client.GetObjectMetadataAsync(bucket, key);
-            var md5 = GetFileMD5Checksum(f.FullName);
+            var metadata = await client.GetObjectMetadataAsync(key);
+            var md5bytes = GetFileMD5Checksum(f.FullName);
+            var md5 = BitConverter.ToString(md5bytes).Replace("-", String.Empty);
             var stored = metadata?.ETag?.Trim().Trim('"');
 
             if (stored != null) {
@@ -175,28 +149,28 @@ public class S3Repository : DownRepository<S3DownloadOptions>, IRepositoryCanUpl
             // already exists. storage providers should prefer the newer file of the same name.
         }
 
+        var bucket = client.Bucket;
         var req = new PutObjectRequest {
             BucketName = bucket,
             FilePath = f.FullName,
             Key = key,
+            //due to compatibility reasons CloudFlare R2, Oracle Object storage (maybe some other providers)
+            // doesn't support Streaming SigV4 which is used in chunked uploading
+            DisablePayloadSigning = true,
+            DisableDefaultChecksumValidation = false,
         };
 
-        await RetryAsync(() => client.PutObjectAsync(req), "Uploading " + key);
+        if (noCache) {
+            req.Headers.CacheControl = "no-cache";
+        }
+
+        await RetryAsync(() => client.Amazon.PutObjectAsync(req), "Uploading " + key + (noCache ? " (no-cache)" : ""));
 
         if (deleteOldVersionId != null) {
             try {
-                await RetryAsync(() => client.DeleteObjectAsync(bucket, key, deleteOldVersionId),
+                await RetryAsync(() => client.Amazon.DeleteObjectAsync(bucket, key, deleteOldVersionId),
                     "Removing old version of " + key);
             } catch { }
         }
-    }
-
-    private static string GetFileMD5Checksum(string filePath)
-    {
-        var sha = System.Security.Cryptography.MD5.Create();
-        byte[] checksum;
-        using (var fs = File.OpenRead(filePath))
-            checksum = sha.ComputeHash(fs);
-        return BitConverter.ToString(checksum).Replace("-", String.Empty);
     }
 }

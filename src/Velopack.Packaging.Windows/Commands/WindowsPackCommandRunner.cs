@@ -1,5 +1,4 @@
-﻿using System.Runtime.Versioning;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using Velopack.Compression;
 using Velopack.NuGet;
 using Velopack.Packaging.Abstractions;
@@ -8,7 +7,6 @@ using Velopack.Windows;
 
 namespace Velopack.Packaging.Windows.Commands;
 
-[SupportedOSPlatform("windows")]
 public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
 {
     public WindowsPackCommandRunner(ILogger logger, IFancyConsole console)
@@ -29,18 +27,17 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
 
     protected override Task<string> PreprocessPackDir(Action<int> progress, string packDir)
     {
-        // fail the release if this is a clickonce application
-        if (Directory.EnumerateFiles(packDir, "*.application").Any(f => File.ReadAllText(f).Contains("clickonce"))) {
-            throw new ArgumentException(
-                "Velopack does not support building releases for ClickOnce applications. " +
-                "Please publish your application to a folder without ClickOnce.");
-        }
-
         if (!Options.SkipVelopackAppCheck) {
-            DotnetUtil.VerifyVelopackApp(MainExePath, Log);
+            var compat = new CompatUtil(Log, Console);
+            compat.Verify(MainExePath);
         } else {
             Log.Info("Skipping VelopackApp.Build.Run() check.");
         }
+
+        // add nuspec metadata
+        ExtraNuspecMetadata["runtimeDependencies"] = GetRuntimeDependencies();
+        ExtraNuspecMetadata["shortcutLocations"] = GetShortcutLocations();
+        ExtraNuspecMetadata["shortcutAmuid"] = Utility.CreateGuidFromHash(Options.PackId).ToString();
 
         // copy files to temp dir, so we can modify them
         var dir = TempDir.CreateSubdirectory("PreprocessPackDirWin");
@@ -49,26 +46,66 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
         packDir = dir.FullName;
 
         var updatePath = Path.Combine(TempDir.FullName, "Update.exe");
-        File.Copy(HelperFile.GetUpdatePath(), updatePath, true);
+        File.Copy(HelperFile.GetUpdatePath(Options.TargetRuntime, Log), updatePath, true);
+
+        // check for and delete clickonce manifest
+        var clickonceManifests = Directory.EnumerateFiles(packDir, "*.application")
+            .Where(f => File.ReadAllText(f).Contains("clickonce"))
+            .ToArray();
+        if (clickonceManifests.Any()) {
+            foreach (var manifest in clickonceManifests) {
+                Log.Warn(
+                    $"Clickonce manifest found in pack directory: '{Path.GetFileName(manifest)}'. " +
+                    $"Velopack does not support building clickonce applications, and so will delete this file automatically. " +
+                    $"It is recommended that you remove clickonce from your .csproj to avoid this warning.");
+                File.Delete(manifest);
+            }
+        }
 
         // update icon for Update.exe if requested
-        if (Options.Icon != null && VelopackRuntimeInfo.IsWindows) {
-            Rcedit.SetExeIcon(updatePath, Options.Icon);
-        } else if (Options.Icon != null) {
-            Log.Warn("Unable to set icon for Update.exe (only supported on windows).");
+        if (Options.Icon != null) {
+            var editor = new ResourceEdit(updatePath, Log);
+            editor.SetExeIcon(Options.Icon);
+            editor.Commit();
         }
 
         File.Copy(updatePath, Path.Combine(packDir, "Squirrel.exe"), true);
 
         // create a stub for portable packages
-        var mainPath = Path.Combine(packDir, MainExeName);
-        var stubPath = Path.Combine(packDir, Path.GetFileNameWithoutExtension(MainExeName) + "_ExecutionStub.exe");
+        var mainExeName = Options.EntryExecutableName;
+        var mainPath = Path.Combine(packDir, mainExeName);
+        var stubPath = Path.Combine(packDir, Path.GetFileNameWithoutExtension(mainExeName) + "_ExecutionStub.exe");
         CreateExecutableStubForExe(mainPath, stubPath);
 
         return Task.FromResult(packDir);
     }
 
-    protected override string GetRuntimeDependencies()
+    protected string GetShortcutLocations()
+    {
+        if (String.IsNullOrWhiteSpace(Options.Shortcuts))
+            return null;
+
+        try {
+            var shortcuts = Options.Shortcuts.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Select(x => (ShortcutLocation) Enum.Parse(typeof(ShortcutLocation), x, true))
+                .ToList();
+
+            if (shortcuts.Count == 0)
+                return null;
+
+            var shortcutString = string.Join(",", shortcuts.Select(x => x.ToString()));
+            Log.Debug($"Shortcut Locations: {shortcutString}");
+            return shortcutString;
+        } catch (Exception ex) {
+            throw new UserInfoException(
+                $"Invalid shortcut locations '{Options.Shortcuts}'. " +
+                $"Valid values for comma delimited list are: {string.Join(", ", Enum.GetNames(typeof(ShortcutLocation)))}." +
+                $"Error was {ex.Message}");
+        }
+    }
+
+    protected string GetRuntimeDependencies()
     {
         if (string.IsNullOrWhiteSpace(Options.Runtimes))
             return "";
@@ -135,14 +172,17 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
 
     protected override Task CreateSetupPackage(Action<int> progress, string releasePkg, string packDir, string targetSetupExe)
     {
-        var bundledzp = new ZipPackage(releasePkg);
+        var bundledZip = new ZipPackage(releasePkg);
         Utility.Retry(() => File.Copy(HelperFile.SetupPath, targetSetupExe, true));
         progress(10);
-        if (VelopackRuntimeInfo.IsWindows) {
-            Rcedit.SetPEVersionBlockFromPackageInfo(targetSetupExe, bundledzp, Options.Icon);
-        } else {
-            Log.Warn("Unable to set Setup.exe icon (only supported on windows)");
+
+        var editor = new ResourceEdit(targetSetupExe, Log);
+        editor.SetVersionInfo(bundledZip);
+        if (Options.Icon != null) {
+            editor.SetExeIcon(Options.Icon);
         }
+        editor.Commit();
+
         progress(25);
         Log.Debug($"Creating Setup bundle");
         SetupBundle.CreatePackageBundle(targetSetupExe, releasePkg);
@@ -166,9 +206,13 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
         File.Delete(Path.Combine(current.FullName, "Squirrel.exe"));
 
         // move the stub to the root of the portable package
-        var stubPath = Path.Combine(current.FullName, Path.GetFileNameWithoutExtension(MainExeName) + "_ExecutionStub.exe");
+        var stubPath = Path.Combine(current.FullName,
+            Path.GetFileNameWithoutExtension(Options.EntryExecutableName) + "_ExecutionStub.exe");
         var stubName = (Options.PackTitle ?? Options.PackId) + ".exe";
         File.Move(stubPath, Path.Combine(dir.FullName, stubName));
+
+        // create a .portable file to indicate this is a portable package
+        File.Create(Path.Combine(dir.FullName, ".portable")).Close();
 
         await EasyZip.CreateZipFromDirectoryAsync(Log, outputPath, dir.FullName, Utility.CreateProgressDelegate(progress, 40, 100));
         progress(100);
@@ -184,17 +228,15 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
 
     private void CreateExecutableStubForExe(string exeToCopy, string targetStubPath)
     {
+        if (!File.Exists(exeToCopy)) {
+            throw new ArgumentException($"Cannot create StubExecutable for '{exeToCopy}' because it does not exist.");
+        }
+
         try {
             Utility.Retry(() => File.Copy(HelperFile.StubExecutablePath, targetStubPath, true));
-            Utility.Retry(() => {
-                if (VelopackRuntimeInfo.IsWindows) {
-                    using var writer = new Microsoft.NET.HostModel.ResourceUpdater(targetStubPath, true);
-                    writer.AddResourcesFromPEImage(exeToCopy);
-                    writer.Update();
-                } else {
-                    Log.Warn($"Cannot set resources/icon for {targetStubPath} (only supported on windows).");
-                }
-            });
+            var edit = new ResourceEdit(targetStubPath, Log);
+            edit.CopyResourcesFrom(exeToCopy);
+            edit.Commit();
         } catch (Exception ex) {
             Log.Error(ex, $"Error creating StubExecutable and copying resources for '{exeToCopy}'. This stub may or may not work properly.");
         }
@@ -213,25 +255,22 @@ public class WindowsPackCommandRunner : PackageBuilder<WindowsPackOptions>
         }
 
         if (!string.IsNullOrEmpty(signTemplate)) {
-            Log.Info($"Preparing to sign {filePaths.Length} files with custom signing template");
-            for (var i = 0; i < filePaths.Length; i++) {
-                var f = filePaths[i];
-                helper.SignPEFileWithTemplate(f, signTemplate);
-                progress((int) ((double) i / filePaths.Length * 100));
-            }
-            return;
+            helper.Sign(rootDir, filePaths, signTemplate, signParallel, progress, true);
         }
 
         // signtool.exe does not work if we're not on windows.
         if (!VelopackRuntimeInfo.IsWindows) return;
 
         if (!string.IsNullOrEmpty(signParams)) {
-            string message = $"Preparing to sign {filePaths.Length} files with embedded signtool.exe";
-            if (signParallel > 1 && filePaths.Length > 1) {
-                message += $" with parallelism of {signParallel}";
-            }
-            Log.Info(message);
-            helper.SignPEFilesWithSignTool(rootDir, filePaths, signParams, signParallel, progress);
+            helper.Sign(rootDir, filePaths, signParams, signParallel, progress, false);
         }
+    }
+
+    protected override string[] GetMainExeSearchPaths(string packDirectory, string mainExeName)
+    {
+        return new[] {
+            Path.Combine(packDirectory, mainExeName),
+            Path.Combine(packDirectory, mainExeName) + ".exe",
+        };
     }
 }
